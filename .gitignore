@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+.env
+
+# Node / frontend
+node_modules/
+dist/
+build/
+.env.local
+.env.development
+.env.production
+
+# AWS / GCP credentials - DO NOT COMMIT
+*.pem
+*.key
+*.json
+credentials
+credentials.json
+service-account.json
+.aws/
+.gcloud/
+
+# Model files - usually too large
+*.pt
+*.pth
+*.onnx
+*.h5
+
+# Media test files - avoid huge repo
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.jpg
+*.jpeg
+*.png
+*.webp
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
