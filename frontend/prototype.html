@@ -12,7 +12,7 @@
         <h1>Aussie EcoLens</h1>
         <p>Simple dashboard for upload, query and tag management</p>
       </div>
-      <div class="status-chip">Prototype UI</div>
+      <div id="statusChip" class="status-chip">Prototype UI</div>
     </header>
 
     <main class="page">
@@ -20,7 +20,7 @@
         <h2>Quick Steps</h2>
         <div class="steps">
           <span>1. Set API URL</span>
-          <span>2. Login / add token</span>
+          <span>2. Sign in with Cognito</span>
           <span>3. Upload or query</span>
           <span>4. Check results</span>
         </div>
@@ -31,92 +31,91 @@
           <section class="card">
             <h2>Connection</h2>
             <label for="apiBase">API Base URL</label>
-            <input id="apiBase" type="text" placeholder="https://your-api-domain" />
-            <small>All requests use this base URL.</small>
+            <input id="apiBase" type="text" placeholder="http://localhost:8001" />
+            <small>Defaults from <code>VITE_API_BASE_URL</code> in <code>.env</code> if set.</small>
           </section>
 
           <section class="card">
             <h2>Authentication</h2>
-            <div class="grid two">
-              <div>
-                <label for="cognitoDomain">Cognito Domain</label>
-                <input id="cognitoDomain" type="text" placeholder="your-domain.auth.ap-southeast-2.amazoncognito.com" />
-              </div>
-              <div>
-                <label for="cognitoClientId">Cognito Client ID</label>
-                <input id="cognitoClientId" type="text" placeholder="client id" />
-              </div>
-            </div>
-            <label for="redirectUri">Redirect URI</label>
-            <input id="redirectUri" type="text" placeholder="http://localhost:8000/" />
+            <p id="authStatus" class="auth-status">Not signed in</p>
+            <small>Cognito is configured via Amplify and <code>frontend/.env</code>.</small>
             <div class="actions">
-              <button id="loginBtn">Login (Hosted UI)</button>
+              <button id="loginBtn">Sign in (Hosted UI)</button>
               <button id="verifyTokenBtn" class="secondary">Verify Token</button>
-              <button id="logoutBtn" class="secondary">Logout</button>
+              <button id="logoutBtn" class="secondary">Sign out</button>
             </div>
-            <label for="token">JWT Token</label>
-            <textarea id="token" rows="4" placeholder="Paste Cognito id/access token"></textarea>
+            <label for="token">ID token (auto-filled after sign-in)</label>
+            <textarea id="token" rows="4" placeholder="Sign in to load Cognito ID token"></textarea>
             <small id="authModeHint">Auth mode: checking...</small><br />
-            <small id="tokenHint">Tip: login callback token will auto-fill here.</small>
-          </section>
-
-          <section class="card">
-            <h2>Upload Media</h2>
-            <input id="uploadFile" type="file" accept="image/*,video/*" />
-            <div class="actions one">
-              <button id="uploadBtn">Upload File</button>
-            </div>
-          </section>
-        </div>
-
-        <div class="column">
-          <section class="card">
-            <h2>Queries</h2>
-            <div class="query-group">
-              <h3>Tag + Min Count (AND)</h3>
-              <p class="hint">Example: {"koala": 2, "magpie": 1}</p>
-              <textarea id="queryTagCount" rows="3" placeholder='{"koala": 2}'></textarea>
-              <button id="queryTagCountBtn">Run Query</button>
-            </div>
-
-            <div class="query-group">
-              <h3>By Species</h3>
-              <input id="querySpecies" type="text" placeholder="dingo" />
-              <button id="querySpeciesBtn">Run Query</button>
-            </div>
-
-            <div class="query-group">
-              <h3>Thumbnail URL to Full Image URL</h3>
-              <input id="queryThumbnail" type="text" placeholder="https://...thumbnail.jpg" />
-              <button id="queryThumbnailBtn">Run Query</button>
-            </div>
-
-            <div class="query-group">
-              <h3>Find by Uploaded File Tags</h3>
-              <input id="queryFile" type="file" accept="image/*,video/*" />
-              <button id="queryFileBtn">Run Query</button>
-            </div>
-          </section>
-
-          <section class="card">
-            <h2>Tag & File Management</h2>
-            <div class="query-group">
-              <h3>Bulk Tag Update</h3>
-              <p class="hint">{"urls":["https://..../a.jpg"],"tags":["koala"],"operation":1}</p>
-              <textarea id="bulkTagsPayload" rows="4"></textarea>
-              <button id="bulkTagsBtn">Submit</button>
-            </div>
-            <div class="query-group">
-              <h3>Delete Files</h3>
-              <p class="hint">{"urls":["https://..../a.jpg"]}</p>
-              <textarea id="deletePayload" rows="3"></textarea>
-              <button id="deleteBtn" class="danger">Delete Files</button>
-            </div>
+            <small id="tokenHint"
+              >Authorization code flow. Register callback
+              <code>http://localhost:3000/prototype.html</code> in Cognito.</small
+            >
           </section>
         </div>
       </section>
 
-      <section class="card results-card">
+      <div id="protectedWorkspace" class="locked">
+        <section class="workspace">
+          <div class="column">
+            <section class="card">
+              <h2>Upload Media</h2>
+              <input id="uploadFile" type="file" accept="image/*,video/*" />
+              <div class="actions one">
+                <button id="uploadBtn">Upload File</button>
+              </div>
+            </section>
+          </div>
+
+          <div class="column">
+            <section class="card">
+              <h2>Queries</h2>
+              <div class="query-group">
+                <h3>Tag + Min Count (AND)</h3>
+                <p class="hint">Example: {"koala": 2, "magpie": 1}</p>
+                <textarea id="queryTagCount" rows="3" placeholder='{"koala": 2}'></textarea>
+                <button id="queryTagCountBtn">Run Query</button>
+              </div>
+
+              <div class="query-group">
+                <h3>By Species</h3>
+                <input id="querySpecies" type="text" placeholder="dingo" />
+                <button id="querySpeciesBtn">Run Query</button>
+              </div>
+
+              <div class="query-group">
+                <h3>Thumbnail URL to Full Image URL</h3>
+                <input id="queryThumbnail" type="text" placeholder="https://...thumbnail.jpg" />
+                <button id="queryThumbnailBtn">Run Query</button>
+              </div>
+
+              <div class="query-group">
+                <h3>Find by Uploaded File Tags</h3>
+                <input id="queryFile" type="file" accept="image/*,video/*" />
+                <button id="queryFileBtn">Run Query</button>
+              </div>
+            </section>
+
+            <section class="card">
+              <h2>Tag & File Management</h2>
+              <div class="query-group">
+                <h3>Bulk Tag Update</h3>
+                <p class="hint">{"urls":["https://..../a.jpg"],"tags":["koala"],"operation":1}</p>
+                <textarea id="bulkTagsPayload" rows="4"></textarea>
+                <button id="bulkTagsBtn">Submit</button>
+              </div>
+              <div class="query-group">
+                <h3>Delete Files</h3>
+                <p class="hint">{"urls":["https://..../a.jpg"]}</p>
+                <textarea id="deletePayload" rows="3"></textarea>
+                <button id="deleteBtn" class="danger">Delete Files</button>
+              </div>
+            </section>
+          </div>
+        </section>
+      </div>
+
+      <section id="protectedResults" class="card results-card locked">
         <h2>Results</h2>
         <div class="actions one">
           <button id="listFilesBtn" class="secondary">Load Saved Records</button>
@@ -126,6 +125,6 @@
       </section>
     </main>
 
-    <script src="./app.js"></script>
+    <script type="module" src="./app.js"></script>
   </body>
 </html>

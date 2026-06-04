@@ -1,97 +1,166 @@
+import './amplifyConfig.js';
+import {
+  fetchAuthSession,
+  getCurrentUser,
+  signInWithRedirect,
+  signOut,
+} from 'aws-amplify/auth';
+import { Hub } from 'aws-amplify/utils';
+
 const el = (id) => document.getElementById(id);
 
+const defaultApiBase = import.meta.env.VITE_API_BASE_URL || '';
+
 const state = {
-  apiBase: localStorage.getItem("apiBase") || "",
-  token: localStorage.getItem("token") || "",
-  cognitoDomain: localStorage.getItem("cognitoDomain") || "",
-  cognitoClientId: localStorage.getItem("cognitoClientId") || "",
-  redirectUri: localStorage.getItem("redirectUri") || `${window.location.origin}/`,
+  apiBase: localStorage.getItem('apiBase') || defaultApiBase,
+  token: localStorage.getItem('token') || '',
+  userEmail: '',
 };
 
 function init() {
-  el("apiBase").value = state.apiBase;
-  el("token").value = state.token;
-  el("cognitoDomain").value = state.cognitoDomain;
-  el("cognitoClientId").value = state.cognitoClientId;
-  el("redirectUri").value = state.redirectUri;
+  el('apiBase').value = state.apiBase;
+  el('token').value = state.token;
 
-  el("apiBase").addEventListener("input", () => {
-    state.apiBase = el("apiBase").value.trim();
-    localStorage.setItem("apiBase", state.apiBase);
+  el('apiBase').addEventListener('input', () => {
+    state.apiBase = el('apiBase').value.trim();
+    localStorage.setItem('apiBase', state.apiBase);
     loadAuthConfig();
   });
 
-  el("token").addEventListener("input", () => {
-    state.token = el("token").value.trim();
-    localStorage.setItem("token", state.token);
-  });
-  el("cognitoDomain").addEventListener("input", () => {
-    state.cognitoDomain = el("cognitoDomain").value.trim();
-    localStorage.setItem("cognitoDomain", state.cognitoDomain);
-  });
-  el("cognitoClientId").addEventListener("input", () => {
-    state.cognitoClientId = el("cognitoClientId").value.trim();
-    localStorage.setItem("cognitoClientId", state.cognitoClientId);
-  });
-  el("redirectUri").addEventListener("input", () => {
-    state.redirectUri = el("redirectUri").value.trim();
-    localStorage.setItem("redirectUri", state.redirectUri);
+  el('token').addEventListener('input', () => {
+    state.token = el('token').value.trim();
+    localStorage.setItem('token', state.token);
+    updateProtectedUi();
   });
 
-  el("loginBtn").addEventListener("click", mockLogin);
-  el("verifyTokenBtn").addEventListener("click", verifyToken);
-  el("logoutBtn").addEventListener("click", logout);
-  el("uploadBtn").addEventListener("click", uploadFile);
-  el("queryTagCountBtn").addEventListener("click", queryTagCount);
-  el("querySpeciesBtn").addEventListener("click", querySpecies);
-  el("queryThumbnailBtn").addEventListener("click", queryThumbnail);
-  el("queryFileBtn").addEventListener("click", queryByFile);
-  el("bulkTagsBtn").addEventListener("click", bulkTags);
-  el("deleteBtn").addEventListener("click", deleteFiles);
-  el("listFilesBtn").addEventListener("click", listFiles);
+  el('loginBtn').addEventListener('click', login);
+  el('verifyTokenBtn').addEventListener('click', verifyToken);
+  el('logoutBtn').addEventListener('click', logout);
+  el('uploadBtn').addEventListener('click', uploadFile);
+  el('queryTagCountBtn').addEventListener('click', queryTagCount);
+  el('querySpeciesBtn').addEventListener('click', querySpecies);
+  el('queryThumbnailBtn').addEventListener('click', queryThumbnail);
+  el('queryFileBtn').addEventListener('click', queryByFile);
+  el('bulkTagsBtn').addEventListener('click', bulkTags);
+  el('deleteBtn').addEventListener('click', deleteFiles);
+  el('listFilesBtn').addEventListener('click', listFiles);
 
-  absorbTokenFromCallback();
+  Hub.listen('auth', ({ payload }) => {
+    if (payload.event === 'signedIn' || payload.event === 'tokenRefresh') {
+      refreshAuthState();
+    }
+    if (payload.event === 'signedOut') {
+      clearLocalAuth();
+    }
+  });
+
+  refreshAuthState();
   loadAuthConfig();
 }
 
-function mockLogin() {
-  const domain = state.cognitoDomain.trim();
-  const clientId = state.cognitoClientId.trim();
-  const redirectUri = state.redirectUri.trim() || `${window.location.origin}/`;
-  if (!domain || !clientId) {
-    renderResult({ error: "Cognito domain and client ID are required." });
-    return;
+async function login() {
+  try {
+    await signInWithRedirect();
+  } catch (error) {
+    renderResult({ error: error.message || String(error) });
   }
-  const loginUrl = `https://${domain}/login?response_type=token&client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
-  window.location.href = loginUrl;
 }
 
-function logout() {
-  const domain = state.cognitoDomain.trim();
-  const clientId = state.cognitoClientId.trim();
-  const logoutRedirect = state.redirectUri.trim() || `${window.location.origin}/`;
-  state.token = "";
-  el("token").value = "";
-  localStorage.removeItem("token");
-  const details = { message: "Logged out (local token cleared)." };
-  if (domain && clientId) {
-    const logoutUrl = `https://${domain}/logout?client_id=${encodeURIComponent(clientId)}&logout_uri=${encodeURIComponent(logoutRedirect)}`;
-    details.logoutUrl = logoutUrl;
+async function logout() {
+  try {
+    await signOut();
+  } catch (error) {
+    renderResult({ error: error.message || String(error) });
+  } finally {
+    clearLocalAuth();
   }
-  renderResult(details);
+}
+
+function clearLocalAuth() {
+  state.token = '';
+  state.userEmail = '';
+  el('token').value = '';
+  localStorage.removeItem('token');
+  updateAuthStatus();
+  updateProtectedUi();
+  el('tokenHint').textContent =
+    'Signed out. Sign in again to use upload and query features.';
+}
+
+async function refreshAuthState() {
+  try {
+    const session = await fetchAuthSession();
+    const idToken = session.tokens?.idToken?.toString();
+    if (!idToken) {
+      updateAuthStatus();
+      updateProtectedUi();
+      return;
+    }
+
+    state.token = idToken;
+    el('token').value = idToken;
+    localStorage.setItem('token', idToken);
+
+    try {
+      const user = await getCurrentUser();
+      const claims = session.tokens?.idToken?.payload || {};
+      state.userEmail =
+        claims.email ||
+        user.signInDetails?.loginId ||
+        user.username ||
+        user.userId ||
+        'Signed in';
+    } catch {
+      state.userEmail = 'Signed in';
+    }
+
+    updateAuthStatus();
+    updateProtectedUi();
+    el('tokenHint').textContent =
+      'ID token from Amplify session (sent as Bearer on API calls).';
+  } catch {
+    updateAuthStatus();
+    updateProtectedUi();
+  }
+}
+
+function updateAuthStatus() {
+  const statusEl = el('authStatus');
+  if (state.userEmail && state.token) {
+    statusEl.textContent = `Signed in as ${state.userEmail}`;
+    statusEl.classList.add('signed-in');
+    el('statusChip').textContent = 'Authenticated';
+  } else {
+    statusEl.textContent = 'Not signed in — sign in to use the app';
+    statusEl.classList.remove('signed-in');
+    el('statusChip').textContent = 'Prototype UI';
+  }
+}
+
+function updateProtectedUi() {
+  const locked = !state.token;
+  el('protectedWorkspace').classList.toggle('locked', locked);
+  el('protectedResults').classList.toggle('locked', locked);
+}
+
+async function ensureAuthenticated() {
+  await refreshAuthState();
+  if (!state.token) {
+    throw new Error('Sign in required. Use Sign in (Hosted UI) first.');
+  }
 }
 
 function getHeaders() {
-  const headers = { Accept: "application/json" };
+  const headers = { Accept: 'application/json' };
   if (state.token) headers.Authorization = `Bearer ${state.token}`;
   return headers;
 }
 
 function buildUrl(path) {
   if (!state.apiBase) {
-    throw new Error("Set API Base URL first.");
+    throw new Error('Set API Base URL first.');
   }
-  return `${state.apiBase.replace(/\/$/, "")}${path}`;
+  return `${state.apiBase.replace(/\/$/, '')}${path}`;
 }
 
 async function requestJson(path, options = {}) {
@@ -110,25 +179,27 @@ async function requestJson(path, options = {}) {
     data = { raw: text };
   }
   if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText}: ${JSON.stringify(data)}`);
+    throw new Error(
+      `${response.status} ${response.statusText}: ${JSON.stringify(data)}`,
+    );
   }
   return data;
 }
 
 function renderResult(data) {
-  el("resultBox").textContent = JSON.stringify(data, null, 2);
+  el('resultBox').textContent = JSON.stringify(data, null, 2);
   renderGallery(data);
 }
 
 function renderGallery(data) {
-  const gallery = el("gallery");
-  gallery.innerHTML = "";
+  const gallery = el('gallery');
+  gallery.innerHTML = '';
   const urls = extractUrls(data);
   urls.forEach((url) => {
-    const img = document.createElement("img");
+    const img = document.createElement('img');
     img.src = url;
-    img.alt = "thumbnail";
-    img.loading = "lazy";
+    img.alt = 'thumbnail';
+    img.loading = 'lazy';
     gallery.appendChild(img);
   });
 }
@@ -136,11 +207,15 @@ function renderGallery(data) {
 function extractUrls(data) {
   const maybeUrls = [];
   const walk = (value) => {
-    if (typeof value === "string" && /^https?:\/\//.test(value) && /\.(jpg|jpeg|png|webp)$/i.test(value)) {
+    if (
+      typeof value === 'string' &&
+      /^https?:\/\//.test(value) &&
+      /\.(jpg|jpeg|png|webp)$/i.test(value)
+    ) {
       maybeUrls.push(value);
     } else if (Array.isArray(value)) {
       value.forEach(walk);
-    } else if (value && typeof value === "object") {
+    } else if (value && typeof value === 'object') {
       Object.values(value).forEach(walk);
     }
   };
@@ -150,12 +225,13 @@ function extractUrls(data) {
 
 async function uploadFile() {
   try {
-    const file = el("uploadFile").files[0];
-    if (!file) throw new Error("Choose a file first.");
+    await ensureAuthenticated();
+    const file = el('uploadFile').files[0];
+    if (!file) throw new Error('Choose a file first.');
     const form = new FormData();
-    form.append("file", file);
-    const data = await requestJson("/upload", {
-      method: "POST",
+    form.append('file', file);
+    const data = await requestJson('/upload', {
+      method: 'POST',
       body: form,
       headers: getHeaders(),
     });
@@ -167,10 +243,11 @@ async function uploadFile() {
 
 async function queryTagCount() {
   try {
-    const payload = JSON.parse(el("queryTagCount").value || "{}");
-    const data = await requestJson("/query/tags-count", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+    await ensureAuthenticated();
+    const payload = JSON.parse(el('queryTagCount').value || '{}');
+    const data = await requestJson('/query/tags-count', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
     renderResult(data);
@@ -181,11 +258,12 @@ async function queryTagCount() {
 
 async function querySpecies() {
   try {
-    const species = el("querySpecies").value.trim();
-    if (!species) throw new Error("Species is required.");
-    const data = await requestJson("/query/species", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+    await ensureAuthenticated();
+    const species = el('querySpecies').value.trim();
+    if (!species) throw new Error('Species is required.');
+    const data = await requestJson('/query/species', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ species }),
     });
     renderResult(data);
@@ -196,11 +274,12 @@ async function querySpecies() {
 
 async function queryThumbnail() {
   try {
-    const thumbnailUrl = el("queryThumbnail").value.trim();
-    if (!thumbnailUrl) throw new Error("Thumbnail URL is required.");
-    const data = await requestJson("/query/thumbnail", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+    await ensureAuthenticated();
+    const thumbnailUrl = el('queryThumbnail').value.trim();
+    if (!thumbnailUrl) throw new Error('Thumbnail URL is required.');
+    const data = await requestJson('/query/thumbnail', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ thumbnailUrl }),
     });
     renderResult(data);
@@ -211,12 +290,13 @@ async function queryThumbnail() {
 
 async function queryByFile() {
   try {
-    const file = el("queryFile").files[0];
-    if (!file) throw new Error("Choose a query file first.");
+    await ensureAuthenticated();
+    const file = el('queryFile').files[0];
+    if (!file) throw new Error('Choose a query file first.');
     const form = new FormData();
-    form.append("file", file);
-    const data = await requestJson("/query/by-file", {
-      method: "POST",
+    form.append('file', file);
+    const data = await requestJson('/query/by-file', {
+      method: 'POST',
       body: form,
       headers: getHeaders(),
     });
@@ -228,10 +308,11 @@ async function queryByFile() {
 
 async function bulkTags() {
   try {
-    const payload = JSON.parse(el("bulkTagsPayload").value || "{}");
-    const data = await requestJson("/tags/bulk", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+    await ensureAuthenticated();
+    const payload = JSON.parse(el('bulkTagsPayload').value || '{}');
+    const data = await requestJson('/tags/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
     renderResult(data);
@@ -242,10 +323,11 @@ async function bulkTags() {
 
 async function deleteFiles() {
   try {
-    const payload = JSON.parse(el("deletePayload").value || "{}");
-    const data = await requestJson("/files/delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+    await ensureAuthenticated();
+    const payload = JSON.parse(el('deletePayload').value || '{}');
+    const data = await requestJson('/files/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
     renderResult(data);
@@ -256,8 +338,9 @@ async function deleteFiles() {
 
 async function listFiles() {
   try {
-    const data = await requestJson("/files?limit=100&offset=0", {
-      method: "GET",
+    await ensureAuthenticated();
+    const data = await requestJson('/files?limit=100&offset=0', {
+      method: 'GET',
     });
     renderResult(data);
   } catch (error) {
@@ -267,7 +350,8 @@ async function listFiles() {
 
 async function verifyToken() {
   try {
-    const data = await requestJson("/auth/me", { method: "GET" });
+    await ensureAuthenticated();
+    const data = await requestJson('/auth/me', { method: 'GET' });
     renderResult(data);
   } catch (error) {
     renderResult({ error: error.message });
@@ -276,30 +360,18 @@ async function verifyToken() {
 
 async function loadAuthConfig() {
   if (!state.apiBase) {
-    el("authModeHint").textContent = "Auth mode: set API Base URL to load.";
+    el('authModeHint').textContent = 'Auth mode: set API Base URL to load.';
     return;
   }
   try {
-    const data = await requestJson("/auth/config", { method: "GET" });
-    const mode = data.authRequired ? "Cognito JWT required" : "development token mode";
-    el("authModeHint").textContent = `Auth mode: ${mode}`;
+    const data = await requestJson('/auth/config', { method: 'GET' });
+    const mode = data.authRequired
+      ? 'Cognito JWT required'
+      : 'development token mode';
+    el('authModeHint').textContent = `Auth mode: ${mode}`;
   } catch {
-    el("authModeHint").textContent = "Auth mode: unable to load.";
+    el('authModeHint').textContent = 'Auth mode: unable to load.';
   }
-}
-
-function absorbTokenFromCallback() {
-  const hash = window.location.hash || "";
-  if (!hash.startsWith("#")) return;
-  const params = new URLSearchParams(hash.slice(1));
-  const idToken = params.get("id_token");
-  const accessToken = params.get("access_token");
-  if (!idToken && !accessToken) return;
-  state.token = idToken || accessToken;
-  el("token").value = state.token;
-  localStorage.setItem("token", state.token);
-  window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
-  el("tokenHint").textContent = "Hosted UI callback token captured automatically.";
 }
 
 init();
