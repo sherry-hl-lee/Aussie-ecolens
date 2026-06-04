@@ -7,7 +7,9 @@ export default function RequireAuth({ children }) {
 
   if (loading) {
     return (
-      <div className="auth-shell">
+      <div className="auth-shell auth-shell--loading">
+        <div className="auth-bg-pattern" aria-hidden="true" />
+        <div className="spinner" aria-label="Loading" />
         <p className="auth-message">Checking sign-in status…</p>
       </div>
     );
