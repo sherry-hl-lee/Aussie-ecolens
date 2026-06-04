@@ -1,3 +1,5 @@
+// Load signInWithRedirect first so enableOAuthListener registers BEFORE configure().
+// Otherwise the OAuth ?code= callback is never exchanged for tokens.
 import { signInWithRedirect } from 'aws-amplify/auth';
 void signInWithRedirect;
 
@@ -14,18 +16,27 @@ function cognitoDomain() {
   return raw.replace(/^https?:\/\//, '').replace(/\/$/, '');
 }
 
+const poolId = import.meta.env.VITE_COGNITO_USER_POOL_ID;
+const clientId = import.meta.env.VITE_COGNITO_USER_POOL_CLIENT_ID;
+const domain = cognitoDomain();
+
+if (!poolId || !clientId || !domain) {
+  console.error(
+    '[Amplify] Missing Cognito env vars. Check frontend/.env has VITE_COGNITO_USER_POOL_ID, VITE_COGNITO_USER_POOL_CLIENT_ID, VITE_COGNITO_DOMAIN',
+  );
+}
+
 Amplify.configure({
   Auth: {
     Cognito: {
-      userPoolId: import.meta.env.VITE_COGNITO_USER_POOL_ID,
-      userPoolClientId: import.meta.env.VITE_COGNITO_USER_POOL_CLIENT_ID,
+      userPoolId: poolId,
+      userPoolClientId: clientId,
       loginWith: {
         oauth: {
-          domain: cognitoDomain(),
+          domain,
           scopes: ['openid', 'email', 'profile'],
           redirectSignIn: [redirectUrl()],
           redirectSignOut: [redirectUrl()],
-          // Authorization Code grant (required for a public SPA, no client secret).
           responseType: 'code',
         },
       },

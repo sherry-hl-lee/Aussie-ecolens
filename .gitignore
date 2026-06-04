@@ -28,3 +28,4 @@ mg_detections.json
 # Env secrets
 .env
 .env.*
+node_modules
