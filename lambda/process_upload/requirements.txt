@@ -1,0 +1,10 @@
+# Deploy as Lambda container image (see docs/aws-deploy.md).
+# Copy backend/inference.py into this folder before build.
+
+boto3
+pillow
+numpy
+torch
+torchvision
+onnx2torch
+opencv-python-headless
