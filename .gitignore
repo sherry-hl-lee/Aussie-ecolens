@@ -1,54 +1,30 @@
-# Python
+# Model weights (provided separately; ~470MB total)
+*.pt
+
+# Local runtime data
+backend/data/
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
+.pytest_cache/
 .venv/
 venv/
-env/
-.env
-
-# Node / frontend
-node_modules/
-dist/
-build/
-.env.local
-.env.development
-.env.production
-
-# AWS / GCP credentials - DO NOT COMMIT
-*.pem
-*.key
-*.json
-credentials
-credentials.json
-service-account.json
-.aws/
-.gcloud/
-
-# Model files - usually too large
-*.pt
-*.pth
-*.onnx
-*.h5
-
-# Media test files - avoid huge repo
-*.mp4
-*.mov
-*.avi
-*.mkv
-*.jpg
-*.jpeg
-*.png
-*.webp
 
 # OS / IDE
 .DS_Store
-Thumbs.db
-.vscode/
+__MACOSX/
 .idea/
+.vscode/
 
-# Terraform
-.terraform/
-*.tfstate
-*.tfstate.backup
+# Archives and assignment PDFs (keep repo small)
+*.zip
+*.pdf
+
+# Test media (use shared drive / Moodle assets instead)
+test_images/
+images/
+cropped_images/
+mg_detections.json
+
+# Env secrets
+.env
+.env.*

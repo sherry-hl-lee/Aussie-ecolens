@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-multipart
+torch
+torchvision
+numpy
+pillow
+onnx2torch
+opencv-python-headless
+python-jose[cryptography]
