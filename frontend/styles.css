@@ -40,6 +40,22 @@ body {
   font-weight: 700;
 }
 
+.auth-status {
+  margin: 0 0 0.6rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 8px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.auth-status.signed-in {
+  background: #ecfdf5;
+  border-color: #86efac;
+  color: #166534;
+}
+
 .page {
   max-width: 1200px;
   margin: 0 auto;

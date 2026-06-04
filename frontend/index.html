@@ -12,7 +12,7 @@
         <h1>Aussie EcoLens</h1>
         <p>Simple dashboard for upload, query and tag management</p>
       </div>
-      <div class="status-chip">Prototype UI</div>
+      <div id="statusChip" class="status-chip">Prototype UI</div>
     </header>
 
     <main class="page">
@@ -20,7 +20,7 @@
         <h2>Quick Steps</h2>
         <div class="steps">
           <span>1. Set API URL</span>
-          <span>2. Login / add token</span>
+          <span>2. Sign in with Cognito</span>
           <span>3. Upload or query</span>
           <span>4. Check results</span>
         </div>
@@ -37,27 +37,17 @@
 
           <section class="card">
             <h2>Authentication</h2>
-            <div class="grid two">
-              <div>
-                <label for="cognitoDomain">Cognito Domain</label>
-                <input id="cognitoDomain" type="text" placeholder="your-domain.auth.ap-southeast-2.amazoncognito.com" />
-              </div>
-              <div>
-                <label for="cognitoClientId">Cognito Client ID</label>
-                <input id="cognitoClientId" type="text" placeholder="client id" />
-              </div>
-            </div>
-            <label for="redirectUri">Redirect URI</label>
-            <input id="redirectUri" type="text" placeholder="http://localhost:8000/" />
+            <p id="authStatus" class="auth-status">Not signed in</p>
+            <small>Cognito settings are loaded from <code>frontend/.env</code> via Amplify.</small>
             <div class="actions">
-              <button id="loginBtn">Login (Hosted UI)</button>
+              <button id="loginBtn">Sign in (Hosted UI)</button>
               <button id="verifyTokenBtn" class="secondary">Verify Token</button>
-              <button id="logoutBtn" class="secondary">Logout</button>
+              <button id="logoutBtn" class="secondary">Sign out</button>
             </div>
-            <label for="token">JWT Token</label>
-            <textarea id="token" rows="4" placeholder="Paste Cognito id/access token"></textarea>
+            <label for="token">ID token (auto-filled after sign-in)</label>
+            <textarea id="token" rows="4" placeholder="Sign in to load Cognito ID token"></textarea>
             <small id="authModeHint">Auth mode: checking...</small><br />
-            <small id="tokenHint">Tip: login callback token will auto-fill here.</small>
+            <small id="tokenHint">Uses Amplify authorization-code flow. Callback URL must be <code>http://localhost:3000/</code>.</small>
           </section>
 
           <section class="card">
@@ -126,6 +116,6 @@
       </section>
     </main>
 
-    <script src="./app.js"></script>
+    <script type="module" src="./app.js"></script>
   </body>
 </html>
