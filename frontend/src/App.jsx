@@ -4,8 +4,27 @@ import viteLogo from './assets/vite.svg'
 import heroImg from './assets/vite.svg'
 import './App.css'
 
+import { useEffect } from 'react'
+import { getAuthConfig, getAuthMe, listFiles } from './api/client.js'
+
+
 function App() {
   const [count, setCount] = useState(0)
+
+
+  useEffect(() => {
+    const token = 'dev'
+    ;(async () => {
+      try {
+        console.log('[step1] auth/config', await getAuthConfig())
+        console.log('[step1] auth/me', await getAuthMe(token))
+        console.log('[step1] files', await listFiles(token))
+        console.log('[step1] OK — api client works')
+      } catch (e) {
+        console.error('[step1] FAILED', e)
+      }
+    })()
+  }, [])
 
   return (
     <>
