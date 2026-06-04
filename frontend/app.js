@@ -1,6 +1,11 @@
 import { fetchAuthSession, signOut } from 'aws-amplify/auth';
 import './amplifyConfig.js';
 import { Hub } from 'aws-amplify/utils';
+import {
+  completePostLoginRedirect,
+  startCognitoHostedUiSignIn,
+  startCognitoHostedUiSignOut,
+} from './src/auth/cognitoHostedUi.js';
 
 const el = (id) => document.getElementById(id);
 
@@ -18,19 +23,6 @@ const state = {
   userEmail: '',
 };
 
-function cognitoDomain() {
-  return (import.meta.env.VITE_COGNITO_DOMAIN || '')
-    .replace(/^https?:\/\//, '')
-    .replace(/\/$/, '');
-}
-
-function redirectUri() {
-  return (
-    import.meta.env.VITE_COGNITO_REDIRECT_URI?.trim() ||
-    `${window.location.origin}${window.location.pathname}`
-  );
-}
-
 function isValidJwt(token) {
   return typeof token === 'string' && token.split('.').length === 3;
 }
@@ -43,6 +35,7 @@ function applyToken(idToken, sourceLabel) {
   updateAuthStatus();
   updateProtectedUi();
   el('tokenHint').textContent = sourceLabel;
+  completePostLoginRedirect();
 }
 
 function init() {
@@ -90,22 +83,12 @@ function init() {
 }
 
 async function login() {
-  const domain = cognitoDomain();
-  const clientId = import.meta.env.VITE_COGNITO_USER_POOL_CLIENT_ID;
-  const uri = redirectUri();
-  if (!domain || !clientId) {
-    renderResult({ error: 'Missing Cognito settings in frontend/.env' });
-    return;
+  try {
+    // Keeps ecolens_post_login if React set it; uses implicit flow (#id_token on callback URL).
+    startCognitoHostedUiSignIn();
+  } catch (error) {
+    renderResult({ error: error.message || String(error) });
   }
-  // Hosted UI implicit flow: Cognito returns #id_token=... in the URL hash.
-  // (Implicit grant must be enabled on your app client — yours is.)
-  const params = new URLSearchParams({
-    client_id: clientId,
-    response_type: 'token',
-    scope: 'openid email profile',
-    redirect_uri: uri,
-  });
-  window.location.href = `https://${domain}/login?${params.toString()}`;
 }
 
 async function logout() {
@@ -115,16 +98,7 @@ async function logout() {
   } catch {
     /* Amplify session may be empty when using implicit Hosted UI */
   }
-  const domain = cognitoDomain();
-  const clientId = import.meta.env.VITE_COGNITO_USER_POOL_CLIENT_ID;
-  const uri = redirectUri();
-  if (domain && clientId) {
-    const params = new URLSearchParams({
-      client_id: clientId,
-      logout_uri: uri,
-    });
-    window.location.href = `https://${domain}/logout?${params.toString()}`;
-  }
+  startCognitoHostedUiSignOut();
 }
 
 function clearLocalAuth() {
@@ -178,7 +152,7 @@ function absorbTokensFromHash() {
   return true;
 }
 
-async function waitForAmplifySession(maxAttempts = 20) {
+async function waitForAmplifySession(maxAttempts = 40) {
   for (let i = 0; i < maxAttempts; i += 1) {
     try {
       const session = await fetchAuthSession({ forceRefresh: true });
@@ -235,9 +209,14 @@ async function bootstrapAuth() {
     }
     const ok = await waitForAmplifySession();
     clearOAuthParamsFromUrl();
+    if (!ok && isValidJwt(state.token)) {
+      completePostLoginRedirect();
+      loadAuthConfig();
+      return;
+    }
     if (!ok) {
       el('tokenHint').textContent =
-        'Sign-in callback received but token exchange failed. Try Sign in again.';
+        'Sign-in callback received but token exchange failed. Click Sign in again.';
       updateAuthStatus();
       updateProtectedUi();
     }
@@ -264,6 +243,7 @@ async function refreshAuthState() {
       updateAuthStatus();
       updateProtectedUi();
       el('tokenHint').textContent = 'Using saved Cognito ID token.';
+      completePostLoginRedirect();
       return;
     }
 
@@ -278,6 +258,7 @@ async function refreshAuthState() {
       updateAuthStatus();
       updateProtectedUi();
       el('tokenHint').textContent = 'Using saved Cognito ID token.';
+      completePostLoginRedirect();
       return;
     }
     state.token = '';
