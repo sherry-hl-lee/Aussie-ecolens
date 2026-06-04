@@ -56,6 +56,30 @@ body {
   color: #166534;
 }
 
+.locked {
+  position: relative;
+  opacity: 0.55;
+  pointer-events: none;
+  user-select: none;
+}
+
+.locked::after {
+  content: "Sign in to unlock upload, queries, and results";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 1rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #334155;
+  background: rgba(248, 250, 252, 0.72);
+  border-radius: 14px;
+  pointer-events: none;
+}
+
 .page {
   max-width: 1200px;
   margin: 0 auto;
