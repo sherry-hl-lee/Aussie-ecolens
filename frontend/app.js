@@ -1,21 +1,49 @@
+import { fetchAuthSession, signOut } from 'aws-amplify/auth';
 import './amplifyConfig.js';
-import {
-  fetchAuthSession,
-  getCurrentUser,
-  signInWithRedirect,
-  signOut,
-} from 'aws-amplify/auth';
 import { Hub } from 'aws-amplify/utils';
 
 const el = (id) => document.getElementById(id);
 
 const defaultApiBase = import.meta.env.VITE_API_BASE_URL || '';
 
+function readApiBase() {
+  const stored = localStorage.getItem('apiBase');
+  if (stored && stored.trim()) return stored.trim();
+  return defaultApiBase;
+}
+
 const state = {
-  apiBase: localStorage.getItem('apiBase') || defaultApiBase,
+  apiBase: readApiBase(),
   token: localStorage.getItem('token') || '',
   userEmail: '',
 };
+
+function cognitoDomain() {
+  return (import.meta.env.VITE_COGNITO_DOMAIN || '')
+    .replace(/^https?:\/\//, '')
+    .replace(/\/$/, '');
+}
+
+function redirectUri() {
+  return (
+    import.meta.env.VITE_COGNITO_REDIRECT_URI?.trim() ||
+    `${window.location.origin}${window.location.pathname}`
+  );
+}
+
+function isValidJwt(token) {
+  return typeof token === 'string' && token.split('.').length === 3;
+}
+
+function applyToken(idToken, sourceLabel) {
+  state.token = idToken;
+  state.userEmail = emailFromJwt(idToken) || 'Signed in';
+  el('token').value = idToken;
+  localStorage.setItem('token', idToken);
+  updateAuthStatus();
+  updateProtectedUi();
+  el('tokenHint').textContent = sourceLabel;
+}
 
 function init() {
   el('apiBase').value = state.apiBase;
@@ -46,7 +74,11 @@ function init() {
   el('listFilesBtn').addEventListener('click', listFiles);
 
   Hub.listen('auth', ({ payload }) => {
-    if (payload.event === 'signedIn' || payload.event === 'tokenRefresh') {
+    if (
+      payload.event === 'signedIn' ||
+      payload.event === 'tokenRefresh' ||
+      payload.event === 'signInWithRedirect'
+    ) {
       refreshAuthState();
     }
     if (payload.event === 'signedOut') {
@@ -54,25 +86,44 @@ function init() {
     }
   });
 
-  refreshAuthState();
-  loadAuthConfig();
+  bootstrapAuth();
 }
 
 async function login() {
-  try {
-    await signInWithRedirect();
-  } catch (error) {
-    renderResult({ error: error.message || String(error) });
+  const domain = cognitoDomain();
+  const clientId = import.meta.env.VITE_COGNITO_USER_POOL_CLIENT_ID;
+  const uri = redirectUri();
+  if (!domain || !clientId) {
+    renderResult({ error: 'Missing Cognito settings in frontend/.env' });
+    return;
   }
+  // Hosted UI implicit flow: Cognito returns #id_token=... in the URL hash.
+  // (Implicit grant must be enabled on your app client — yours is.)
+  const params = new URLSearchParams({
+    client_id: clientId,
+    response_type: 'token',
+    scope: 'openid email profile',
+    redirect_uri: uri,
+  });
+  window.location.href = `https://${domain}/login?${params.toString()}`;
 }
 
 async function logout() {
+  clearLocalAuth();
   try {
     await signOut();
-  } catch (error) {
-    renderResult({ error: error.message || String(error) });
-  } finally {
-    clearLocalAuth();
+  } catch {
+    /* Amplify session may be empty when using implicit Hosted UI */
+  }
+  const domain = cognitoDomain();
+  const clientId = import.meta.env.VITE_COGNITO_USER_POOL_CLIENT_ID;
+  const uri = redirectUri();
+  if (domain && clientId) {
+    const params = new URLSearchParams({
+      client_id: clientId,
+      logout_uri: uri,
+    });
+    window.location.href = `https://${domain}/logout?${params.toString()}`;
   }
 }
 
@@ -87,47 +138,162 @@ function clearLocalAuth() {
     'Signed out. Sign in again to use upload and query features.';
 }
 
+function hasOAuthCallbackParams() {
+  const params = new URLSearchParams(window.location.search);
+  return params.has('code') || params.has('error');
+}
+
+function clearOAuthParamsFromUrl() {
+  if (!hasOAuthCallbackParams()) return;
+  window.history.replaceState({}, document.title, window.location.pathname);
+}
+
+function emailFromJwt(token) {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    return payload.email || payload['cognito:username'] || '';
+  } catch {
+    return '';
+  }
+}
+
+function absorbTokensFromHash() {
+  const hash = window.location.hash || '';
+  if (!hash.startsWith('#')) return false;
+  const params = new URLSearchParams(hash.slice(1));
+  if (params.get('error')) {
+    el('tokenHint').textContent = `Cognito error: ${params.get('error_description') || params.get('error')}`;
+    window.history.replaceState({}, document.title, window.location.pathname);
+    return false;
+  }
+  const idToken = params.get('id_token');
+  const accessToken = params.get('access_token');
+  if (!idToken && !accessToken) return false;
+
+  applyToken(
+    idToken || accessToken,
+    'Signed in via Cognito Hosted UI. ID token ready for API calls.',
+  );
+  window.history.replaceState({}, document.title, window.location.pathname);
+  return true;
+}
+
+async function waitForAmplifySession(maxAttempts = 20) {
+  for (let i = 0; i < maxAttempts; i += 1) {
+    try {
+      const session = await fetchAuthSession({ forceRefresh: true });
+      const idToken = session.tokens?.idToken?.toString();
+      if (idToken) {
+        applyToken(idToken, 'Signed in via Amplify (authorization code flow).');
+        return true;
+      }
+    } catch {
+      /* retry */
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+  return false;
+}
+
+async function bootstrapAuth() {
+  el('tokenHint').textContent = 'Checking sign-in status…';
+
+  if (!import.meta.env.VITE_COGNITO_USER_POOL_ID) {
+    el('tokenHint').textContent =
+      'Missing Cognito config in frontend/.env — restart npm run dev after editing.';
+    updateAuthStatus();
+    updateProtectedUi();
+    return;
+  }
+
+  // 1) Implicit flow callback (#id_token=...) — do NOT call refreshAuthState after (it would clear the token).
+  if (absorbTokensFromHash()) {
+    loadAuthConfig();
+    return;
+  }
+
+  // 2) Restore a previously saved token from localStorage.
+  if (isValidJwt(state.token)) {
+    applyToken(
+      state.token,
+      'Restored ID token from browser storage.',
+    );
+    loadAuthConfig();
+    return;
+  }
+
+  // 3) Authorization-code callback (?code=...) — wait for Amplify OAuth listener.
+  if (hasOAuthCallbackParams()) {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('error')) {
+      el('tokenHint').textContent = `Cognito error: ${params.get('error_description') || params.get('error')}`;
+      clearOAuthParamsFromUrl();
+      updateAuthStatus();
+      updateProtectedUi();
+      loadAuthConfig();
+      return;
+    }
+    const ok = await waitForAmplifySession();
+    clearOAuthParamsFromUrl();
+    if (!ok) {
+      el('tokenHint').textContent =
+        'Sign-in callback received but token exchange failed. Try Sign in again.';
+      updateAuthStatus();
+      updateProtectedUi();
+    }
+    loadAuthConfig();
+    return;
+  }
+
+  await refreshAuthState();
+  loadAuthConfig();
+}
+
 async function refreshAuthState() {
   try {
     const session = await fetchAuthSession();
     const idToken = session.tokens?.idToken?.toString();
-    if (!idToken) {
-      updateAuthStatus();
-      updateProtectedUi();
+    if (idToken) {
+      applyToken(idToken, 'ID token from Amplify session.');
       return;
     }
 
-    state.token = idToken;
-    el('token').value = idToken;
-    localStorage.setItem('token', idToken);
-
-    try {
-      const user = await getCurrentUser();
-      const claims = session.tokens?.idToken?.payload || {};
-      state.userEmail =
-        claims.email ||
-        user.signInDetails?.loginId ||
-        user.username ||
-        user.userId ||
-        'Signed in';
-    } catch {
-      state.userEmail = 'Signed in';
+    // Keep a valid token we already have (e.g. from implicit Hosted UI).
+    if (isValidJwt(state.token)) {
+      state.userEmail = emailFromJwt(state.token) || state.userEmail || 'Signed in';
+      updateAuthStatus();
+      updateProtectedUi();
+      el('tokenHint').textContent = 'Using saved Cognito ID token.';
+      return;
     }
 
+    state.token = '';
+    state.userEmail = '';
     updateAuthStatus();
     updateProtectedUi();
-    el('tokenHint').textContent =
-      'ID token from Amplify session (sent as Bearer on API calls).';
-  } catch {
+    el('tokenHint').textContent = 'Not signed in. Click Sign in (Hosted UI).';
+  } catch (error) {
+    if (isValidJwt(state.token)) {
+      state.userEmail = emailFromJwt(state.token) || 'Signed in';
+      updateAuthStatus();
+      updateProtectedUi();
+      el('tokenHint').textContent = 'Using saved Cognito ID token.';
+      return;
+    }
+    state.token = '';
+    state.userEmail = '';
     updateAuthStatus();
     updateProtectedUi();
+    el('tokenHint').textContent = `Auth error: ${error.message || error}`;
   }
 }
 
 function updateAuthStatus() {
   const statusEl = el('authStatus');
-  if (state.userEmail && state.token) {
-    statusEl.textContent = `Signed in as ${state.userEmail}`;
+  if (state.token) {
+    statusEl.textContent = state.userEmail
+      ? `Signed in as ${state.userEmail}`
+      : 'Signed in';
     statusEl.classList.add('signed-in');
     el('statusChip').textContent = 'Authenticated';
   } else {
@@ -144,8 +310,9 @@ function updateProtectedUi() {
 }
 
 async function ensureAuthenticated() {
+  if (isValidJwt(state.token)) return;
   await refreshAuthState();
-  if (!state.token) {
+  if (!isValidJwt(state.token)) {
     throw new Error('Sign in required. Use Sign in (Hosted UI) first.');
   }
 }
@@ -360,7 +527,8 @@ async function verifyToken() {
 
 async function loadAuthConfig() {
   if (!state.apiBase) {
-    el('authModeHint').textContent = 'Auth mode: set API Base URL to load.';
+    el('authModeHint').textContent =
+      'Auth mode: set API Base URL (e.g. http://localhost:8001) and start the backend.';
     return;
   }
   try {
@@ -369,8 +537,9 @@ async function loadAuthConfig() {
       ? 'Cognito JWT required'
       : 'development token mode';
     el('authModeHint').textContent = `Auth mode: ${mode}`;
-  } catch {
-    el('authModeHint').textContent = 'Auth mode: unable to load.';
+  } catch (error) {
+    el('authModeHint').textContent = `Backend unreachable at ${state.apiBase} — start backend (port 8001). Cognito login can still work.`;
+    console.warn('loadAuthConfig:', error.message || error);
   }
 }
 
