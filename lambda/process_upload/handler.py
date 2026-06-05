@@ -21,6 +21,8 @@ import json
 import logging
 import os
 import tempfile
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -44,6 +46,8 @@ TABLE_NAME = os.environ["TABLE_NAME"]
 MODEL_S3_URI = os.environ.get("MODEL_S3_URI", "")
 MEDIA_PREFIX = os.environ.get("MEDIA_PREFIX", "media/")
 THUMB_PREFIX = os.environ.get("THUMB_PREFIX", "thumbnails/")
+GCP_NOTIFY_URL = os.environ.get("GCP_NOTIFY_URL", "")
+GCP_WEBHOOK_SECRET = os.environ.get("GCP_WEBHOOK_SECRET", "")
 
 s3 = boto3.client("s3")
 dynamodb = boto3.resource("dynamodb")
@@ -111,7 +115,11 @@ def process_object(bucket: str, key: str) -> dict[str, Any]:
             "createdAt": datetime.now(timezone.utc).isoformat(),
         }
         put_item(item)
-        return {"deduplicated": False, "checksum": checksum, "item": item}
+        gcp_result = notify_gcp_tagged(item, key)
+        result: dict[str, Any] = {"deduplicated": False, "checksum": checksum, "item": item}
+        if gcp_result is not None:
+            result["gcpNotify"] = gcp_result
+        return result
 
 
 def get_item_by_checksum(checksum: str) -> dict[str, Any] | None:
@@ -121,6 +129,46 @@ def get_item_by_checksum(checksum: str) -> dict[str, Any] | None:
     except ClientError:
         logger.exception("DynamoDB get_item failed")
         return None
+
+
+def notify_gcp_tagged(item: dict[str, Any], object_key: str) -> dict[str, Any] | None:
+    """POST tags to Member B GCP Cloud Run after DynamoDB write (best-effort)."""
+    if not GCP_NOTIFY_URL or not GCP_WEBHOOK_SECRET:
+        logger.info("GCP notify skipped (GCP_NOTIFY_URL or GCP_WEBHOOK_SECRET not set)")
+        return None
+
+    payload = {
+        "event": "media.tagged",
+        "checksum": item["checksum"],
+        "filename": object_key,
+        "fileUrl": item["fileUrl"],
+        "thumbnailUrl": item.get("thumbnailUrl") or "",
+        "tags": item["tags"],
+        "tagCounts": item["tagCounts"],
+        "userSub": "",
+        "source": "aws-lambda",
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        GCP_NOTIFY_URL,
+        data=data,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-Webhook-Secret": GCP_WEBHOOK_SECRET,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = resp.read().decode("utf-8")
+            logger.info("GCP notify OK status=%s body=%s", resp.status, body[:500])
+            return json.loads(body) if body else {}
+    except urllib.error.HTTPError as exc:
+        err_body = exc.read().decode("utf-8", errors="replace")
+        logger.warning("GCP notify HTTP %s: %s", exc.code, err_body[:500])
+    except Exception:
+        logger.exception("GCP notify failed")
+    return None
 
 
 def put_item(item: dict[str, Any]) -> None:

@@ -19,6 +19,8 @@
 - `TABLE_NAME`
 - `MODEL_S3_URI`
 - `AWS_REGION` (auto in Lambda)
+- `GCP_NOTIFY_URL` — e.g. `https://...a.run.app/notify` (Member B; optional)
+- `GCP_WEBHOOK_SECRET` — from Member B DM only; never commit
 
 **api**
 
