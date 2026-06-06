@@ -166,15 +166,21 @@ def scan_all_items() -> list[dict[str, Any]]:
 
 
 def find_item_by_file_url(file_url: str) -> dict[str, Any] | None:
+    target_key = s3_key_from_url(file_url)
+    if not target_key:
+        return None
     for item in scan_all_items():
-        if item.get("fileUrl") == file_url:
+        if s3_key_from_url(item.get("fileUrl", "")) == target_key:
             return item
     return None
 
 
 def find_item_by_thumbnail_url(thumbnail_url: str) -> dict[str, Any] | None:
+    target_key = s3_key_from_url(thumbnail_url)
+    if not target_key:
+        return None
     for item in scan_all_items():
-        if item.get("thumbnailUrl") == thumbnail_url:
+        if s3_key_from_url(item.get("thumbnailUrl", "")) == target_key:
             return item
     return None
 
@@ -191,10 +197,47 @@ def find_item_by_checksum(checksum: str) -> dict[str, Any] | None:
 
 
 def s3_key_from_url(url: str) -> str | None:
-    marker = ".amazonaws.com/"
-    if marker not in url:
+    if not url:
         return None
-    return unquote(url.split(marker, 1)[1])
+    base = url.split("?", 1)[0]
+    marker = ".amazonaws.com/"
+    if marker not in base:
+        return None
+    return unquote(base.split(marker, 1)[1])
+
+
+def presign_get_url(url: str) -> str:
+    """Return a time-limited GET URL for a private S3 object."""
+    if not url or not MEDIA_BUCKET:
+        return url
+    key = s3_key_from_url(url)
+    if not key:
+        return url
+    try:
+        return s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": MEDIA_BUCKET, "Key": key},
+            ExpiresIn=PRESIGNED_EXPIRY,
+        )
+    except ClientError:
+        logger.exception("Failed to presign s3://%s/%s", MEDIA_BUCKET, key)
+        return url
+
+
+def presign_item(item: dict[str, Any]) -> dict[str, Any]:
+    """Expose presigned URLs to the frontend; DynamoDB keeps the canonical S3 URLs."""
+    if not item:
+        return item
+    signed = dict(item)
+    if signed.get("fileUrl"):
+        signed["fileUrl"] = presign_get_url(signed["fileUrl"])
+    if signed.get("thumbnailUrl"):
+        signed["thumbnailUrl"] = presign_get_url(signed["thumbnailUrl"])
+    return signed
+
+
+def presign_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [presign_item(it) for it in items]
 
 
 def safe_filename(name: str) -> str:
@@ -231,7 +274,7 @@ def list_files(event: dict[str, Any]) -> dict[str, Any]:
 
     if checksum:
         item = find_item_by_checksum(checksum)
-        items = [item] if item else []
+        items = [presign_item(item)] if item else []
         return respond(
             200,
             {"total": len(items), "limit": 1, "offset": 0, "items": items},
@@ -245,7 +288,7 @@ def list_files(event: dict[str, Any]) -> dict[str, Any]:
 
     all_items = scan_all_items()
     total = len(all_items)
-    page = all_items[offset : offset + limit]
+    page = presign_items(all_items[offset : offset + limit])
     return respond(200, {"total": total, "limit": limit, "offset": offset, "items": page})
 
 
@@ -279,7 +322,7 @@ def query_species(body: dict[str, Any]) -> dict[str, Any]:
         for it in scan_all_items()
         if species in [t.lower() for t in it.get("tags", [])]
     ]
-    return respond(200, {"count": len(results), "items": results})
+    return respond(200, {"count": len(results), "items": presign_items(results)})
 
 
 def query_tags_count(body: dict[str, Any]) -> dict[str, Any]:
@@ -291,7 +334,7 @@ def query_tags_count(body: dict[str, Any]) -> dict[str, Any]:
         counts = {k.lower(): int(v) for k, v in item.get("tagCounts", {}).items()}
         if all(counts.get(tag, 0) >= min_count for tag, min_count in requested.items()):
             results.append(item)
-    return respond(200, {"count": len(results), "items": results})
+    return respond(200, {"count": len(results), "items": presign_items(results)})
 
 
 def query_thumbnail(body: dict[str, Any]) -> dict[str, Any]:
@@ -301,7 +344,8 @@ def query_thumbnail(body: dict[str, Any]) -> dict[str, Any]:
     item = find_item_by_thumbnail_url(thumb)
     if not item:
         return respond(404, {"detail": "Thumbnail not found"})
-    return respond(200, {"fileUrl": item["fileUrl"], "item": item})
+    signed = presign_item(item)
+    return respond(200, {"fileUrl": signed["fileUrl"], "item": signed})
 
 
 def tags_bulk(body: dict[str, Any]) -> dict[str, Any]:

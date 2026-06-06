@@ -2,9 +2,15 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { fetchAuthSession, signOut as amplifySignOut } from 'aws-amplify/auth';
 import { Hub } from 'aws-amplify/utils';
 import { getAuthConfig } from '../api/client.js';
-import { isValidJwt, userFromJwt } from './authUtils.js';
 import {
-  completePostLoginRedirect,
+  absorbTokensFromHash,
+  clearOAuthParamsFromUrl,
+  hasOAuthCallbackParams,
+  isValidJwt,
+  userFromJwt,
+} from './authUtils.js';
+import {
+  postLoginRedirectTarget,
   startCognitoHostedUiSignIn,
   startCognitoHostedUiSignOut,
 } from './cognitoHostedUi.js';
@@ -28,6 +34,24 @@ export function AuthProvider({ children }) {
 
   const syncSession = useCallback(async () => {
     setError(null);
+
+    // 1) Implicit flow: #id_token=... in URL hash
+    const hashResult = absorbTokensFromHash((token) => applyUserFromToken(token));
+    if (hashResult.error) {
+      setError(hashResult.error);
+      setUser(null);
+      return false;
+    }
+    if (hashResult.ok) {
+      return true;
+    }
+
+    // 2) Stale authorization-code callback (?code=...) — Cognito pool uses implicit grant.
+    if (hasOAuthCallbackParams()) {
+      clearOAuthParamsFromUrl();
+    }
+
+    // 3) Existing Amplify session
     try {
       const session = await fetchAuthSession();
       const idToken = session.tokens?.idToken?.toString();
@@ -36,9 +60,10 @@ export function AuthProvider({ children }) {
         return true;
       }
     } catch {
-      /* fall through to stored token */
+      /* fall through */
     }
 
+    // 4) Stored token from a previous login
     const stored = localStorage.getItem('token');
     if (isValidJwt(stored)) {
       applyUserFromToken(stored);
@@ -60,15 +85,14 @@ export function AuthProvider({ children }) {
     boot();
 
     const unsubscribe = Hub.listen('auth', ({ payload }) => {
-      if (
-        payload.event === 'signedIn' ||
-        payload.event === 'tokenRefresh' ||
-        payload.event === 'signInWithRedirect'
-      ) {
-        syncSession();
+      if (payload.event === 'signedIn' || payload.event === 'tokenRefresh') {
+        syncSession().then(() => {
+          if (!cancelled) setLoading(false);
+        });
       }
-      if (payload.event === 'signedOut') {
+      if (payload.event === 'signOut' || payload.event === 'signedOut') {
         localStorage.removeItem('token');
+        sessionStorage.removeItem('ecolens_oauth_processing');
         setUser(null);
       }
     });
@@ -82,7 +106,7 @@ export function AuthProvider({ children }) {
   const signIn = useCallback(async () => {
     setError(null);
     try {
-      // Same implicit Hosted UI flow as prototype.html (callback: prototype.html#id_token=...).
+      // Implicit grant (#id_token in URL) — matches Cognito Hosted UI config (no oauth2/token call).
       startCognitoHostedUiSignIn({ postLoginPath: '/dashboard' });
     } catch (err) {
       setError(err.message || String(err));
@@ -92,11 +116,12 @@ export function AuthProvider({ children }) {
   const signOut = useCallback(async () => {
     setError(null);
     localStorage.removeItem('token');
+    sessionStorage.removeItem('ecolens_post_login');
     setUser(null);
     try {
       await amplifySignOut();
     } catch {
-      /* implicit flow may have no Amplify session */
+      /* ok */
     }
     startCognitoHostedUiSignOut();
   }, []);

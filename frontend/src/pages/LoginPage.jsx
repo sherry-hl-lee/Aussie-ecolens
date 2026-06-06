@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext.jsx';
+import { clearPostLoginRedirect, postLoginRedirectTarget } from '../auth/cognitoHostedUi.js';
 
 export default function LoginPage() {
   const { isAuthenticated, loading, error, signIn, setError } = useAuth();
@@ -8,7 +9,9 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (!loading && isAuthenticated) {
-      navigate('/dashboard', { replace: true });
+      const target = postLoginRedirectTarget() || '/dashboard';
+      clearPostLoginRedirect();
+      navigate(target, { replace: true });
     }
   }, [loading, isAuthenticated, navigate]);
 

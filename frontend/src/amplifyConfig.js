@@ -1,6 +1,3 @@
-import { signInWithRedirect } from 'aws-amplify/auth';
-void signInWithRedirect;
-
 import { Amplify } from 'aws-amplify';
 
 function redirectUrl() {
@@ -25,8 +22,7 @@ Amplify.configure({
           scopes: ['openid', 'email', 'profile'],
           redirectSignIn: [redirectUrl()],
           redirectSignOut: [redirectUrl()],
-          // Authorization Code grant (required for a public SPA, no client secret).
-          responseType: 'code',
+          responseType: 'token',
         },
       },
     },
