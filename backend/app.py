@@ -548,14 +548,15 @@ def build_sns_filter_policy(email: str, tags: list[str]) -> str:
     return json.dumps({"tag": tags, "email": [email.lower().strip()]})
 
 
-def _confirmed_email_subscription_arns(email: str) -> list[str]:
+def _email_subscriptions_for_inbox(email: str) -> tuple[list[str], bool]:
     if not SNS_TOPIC_ARN:
-        return []
+        return [], False
     import boto3
 
     normalized_email = email.lower().strip()
     sns = boto3.client("sns")
-    arns: list[str] = []
+    confirmed: list[str] = []
+    pending = False
     paginator = sns.get_paginator("list_subscriptions_by_topic")
     for page in paginator.paginate(TopicArn=SNS_TOPIC_ARN):
         for sub in page.get("Subscriptions", []):
@@ -564,9 +565,16 @@ def _confirmed_email_subscription_arns(email: str) -> list[str]:
             if str(sub.get("Endpoint", "")).lower() != normalized_email:
                 continue
             arn = str(sub.get("SubscriptionArn", ""))
-            if arn and not arn.endswith("PendingConfirmation"):
-                arns.append(arn)
-    return arns
+            if arn.endswith("PendingConfirmation"):
+                pending = True
+            elif arn:
+                confirmed.append(arn)
+    return confirmed, pending
+
+
+def _confirmed_email_subscription_arns(email: str) -> list[str]:
+    confirmed, _pending = _email_subscriptions_for_inbox(email)
+    return confirmed
 
 
 def clear_sns_email_subscriptions(email: str) -> None:
@@ -604,7 +612,7 @@ def sync_sns_email_filter_for_email(email: str) -> None:
         import boto3
 
         sns = boto3.client("sns")
-        sub_arns = _confirmed_email_subscription_arns(normalized_email)
+        sub_arns, pending = _email_subscriptions_for_inbox(normalized_email)
         if sub_arns:
             for sub_arn in sub_arns:
                 sns.set_subscription_attributes(
@@ -613,6 +621,13 @@ def sync_sns_email_filter_for_email(email: str) -> None:
                     AttributeValue=filter_policy,
                 )
             logger.info("Updated SNS filter for %s tags=%s", normalized_email, tags)
+            return
+
+        if pending:
+            logger.info(
+                "SNS subscription already pending for %s; skip duplicate subscribe",
+                normalized_email,
+            )
             return
 
         sns.subscribe(
