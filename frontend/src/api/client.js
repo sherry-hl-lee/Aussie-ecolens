@@ -162,7 +162,7 @@ async function uploadViaPresignedUrl(file, token) {
     putResp = await fetch(presign.uploadUrl, { method: 'PUT', body: file, headers: putHeaders });
   } catch (err) {
     throw new ApiError(
-      'Direct S3 upload failed (network/CORS). Ask Member A to enable S3 bucket CORS for this origin.',
+      'Direct S3 upload failed (network or CORS). Ensure the S3 bucket allows uploads from this origin.',
       0,
       { cause: err?.message },
     );

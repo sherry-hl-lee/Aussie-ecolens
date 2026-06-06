@@ -1,7 +1,7 @@
 """
-API Gateway Lambda — DynamoDB + S3 presigned upload (Member A).
+API Gateway Lambda — REST routes for EcoLens.
 
-Routes mirror backend/app.py and docs/api-contract.md.
+Mirrors backend/app.py and docs/api-contract.md.
 Auth: Cognito JWT authorizer on API Gateway (except /health, /auth/config).
 """
 

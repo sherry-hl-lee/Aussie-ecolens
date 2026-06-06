@@ -1,5 +1,5 @@
 """
-S3-triggered media processor (AWS Member A skeleton).
+S3-triggered media processor.
 
 Trigger: ObjectCreated on s3://<MEDIA_BUCKET>/media/*
 Flow:
@@ -9,9 +9,7 @@ Flow:
   4. Video: 1 fps frames + aggregate tags + first-frame thumbnail
   5. PutItem DynamoDB
 
-Before deploy:
-  - Copy backend/inference.py to lambda/process_upload/inference.py
-  - Set env: MEDIA_BUCKET, TABLE_NAME, MODEL_S3_URI
+Required env: MEDIA_BUCKET, TABLE_NAME, MODEL_S3_URI
 """
 
 from __future__ import annotations
@@ -187,7 +185,7 @@ def get_item_by_checksum(checksum: str) -> dict[str, Any] | None:
 
 
 def notify_gcp_tagged(item: dict[str, Any], object_key: str) -> dict[str, Any] | None:
-    """POST tags to Member B GCP Cloud Run after DynamoDB write (best-effort)."""
+    """POST tags to GCP Cloud Run webhook after DynamoDB write (best-effort)."""
     if not GCP_NOTIFY_URL or not GCP_WEBHOOK_SECRET:
         logger.info("GCP notify skipped (GCP_NOTIFY_URL or GCP_WEBHOOK_SECRET not set)")
         return None
@@ -296,7 +294,6 @@ def load_taxonomy_map(tmp_dir: str) -> dict[str, str]:
     global _TAXONOMY_MAP
     if _TAXONOMY_MAP:
         return _TAXONOMY_MAP
-    # TODO: download labels.txt from S3 or bundle in image
     return _TAXONOMY_MAP
 
 

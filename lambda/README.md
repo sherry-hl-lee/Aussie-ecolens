@@ -1,4 +1,4 @@
-# Lambda functions (Member A)
+# Lambda functions
 
 Two deployed functions — different packaging and triggers:
 
@@ -40,9 +40,9 @@ Does **not** upload to S3 or write DynamoDB for the query file.
 - `MODEL_S3_URI`
 - `LABELS_S3_URI` (optional if `labels.txt` bundled in image)
 - `AWS_REGION` (auto in Lambda)
-- `GCP_NOTIFY_URL` — e.g. `https://...a.run.app/notify` (Member B; optional)
-- `GCP_WEBHOOK_SECRET` — from Member B DM only; never commit
-- `SNS_TOPIC_ARN` — SNS topic for tag email alerts (Member D)
+- `GCP_NOTIFY_URL` — e.g. `https://...a.run.app/notify` (optional)
+- `GCP_WEBHOOK_SECRET` — shared webhook secret; never commit
+- `SNS_TOPIC_ARN` — SNS topic for tag email alerts
 - `SUBSCRIPTIONS_TABLE` — DynamoDB table (default `ecolens-subscriptions`, PK `userSub`, SK `tag`)
 - `SNS_NOTIFICATIONS_ENABLED` — `true` / `false` (default `true`)
 

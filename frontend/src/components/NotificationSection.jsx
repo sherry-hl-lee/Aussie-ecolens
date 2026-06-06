@@ -34,7 +34,7 @@ export default function NotificationSection({ busy, getToken, onNotice }) {
         setError('Authentication failed (401). Sign out, sign in again, then try Subscribe.');
       } else if (err?.status === 500 || String(msg).includes('500')) {
         setError(
-          'Server error (500). Often the ecolens-subscriptions DynamoDB table is missing, or Lambda IAM lacks DynamoDB permissions. Ask Member A to check CloudWatch logs.',
+          'Server error (500). The notification service may be misconfigured. Check API logs or try again later.',
         );
         try {
           const config = await getAuthConfig();
@@ -45,7 +45,7 @@ export default function NotificationSection({ busy, getToken, onNotice }) {
       } else {
         setError(
           msg === 'Failed to fetch'
-            ? 'Cannot reach the API. Start the backend: uvicorn app:app --port 8001 (use http://127.0.0.1:8001 in VITE_API_BASE_URL).'
+            ? 'Cannot reach the API. Check your network connection and API base URL configuration.'
             : msg,
         );
       }
