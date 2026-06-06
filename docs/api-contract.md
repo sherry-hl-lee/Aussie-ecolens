@@ -52,7 +52,7 @@ Response:
 }
 ```
 
-### Upload (AWS target — Member A)
+### Upload (AWS — presigned)
 
 **Step 1:** `POST /upload` with JSON:
 
@@ -100,8 +100,8 @@ Response:
 | Method | Path | Body | Response |
 |--------|------|------|----------|
 | GET | `/notifications/subscriptions` | — | `{ userSub, email, subscriptions[], snsConfigured, notificationsEnabled }` |
-| POST | `/notifications/subscribe` | `{ "tags": ["dingo"], "email": "optional@override.com" }` | `{ subscribed[], email, snsConfigured }` |
-| POST | `/notifications/unsubscribe` | `{ "tags": ["dingo"] }` | `{ unsubscribed[] }` |
+| POST | `/notifications/subscribe` | `{ "tags": ["dingo"], "email": "optional@override.com" }` | `{ subscribed[], email, snsConfigured, notificationsSent }` |
+| POST | `/notifications/unsubscribe` | `{ "tags": ["dingo"] }` | `{ unsubscribed[], notificationsSent }` |
 
 See `docs/sns-notifications.md` for SNS topic setup and filter policies.
 
@@ -123,4 +123,4 @@ See `docs/sns-notifications.md` for SNS topic setup and filter policies.
 }
 ```
 
-Frontend (`prototype.html` / React) should keep using these field names.
+Frontend (React) should use these field names.

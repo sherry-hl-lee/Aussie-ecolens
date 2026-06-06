@@ -1,197 +1,136 @@
-# AWS Deploy Guide (Member A)
+# AWS Deploy Guide
 
-This document maps the **local prototype** (`backend/app.py`) to **AWS serverless** for FIT5225 A2.
+Maps the **local prototype** (`backend/app.py`) to **AWS serverless** for Aussie EcoLens.
 
-Reference implementation: `backend/app.py`, `backend/inference.py`  
-Lambda skeleton: `lambda/process_upload/`, `lambda/api/`
+Reference: `backend/app.py`, `lambda/process_upload/`, `lambda/api/`, `docs/api-contract.md`
 
 ---
 
-## 1. Target architecture
+## 1. Architecture
 
 | Component | AWS service | Purpose |
 |-----------|-------------|---------|
-| Media storage | S3 `ecolens-media-*` | Original files under `media/`, thumbnails under `thumbnails/` |
-| Model artifact | S3 `models/model.pt` | Swap model without code change (`MODEL_S3_URI` env) |
+| Media storage | S3 | Originals under `media/`, thumbnails under `thumbnails/` |
+| Model artifact | S3 `models/model.pt` | Swap via `MODEL_S3_URI` without code changes |
 | Metadata | DynamoDB `ecolens-files` | Tags, URLs, checksum dedup |
-| Process pipeline | Lambda `ecolens-process-upload` | S3 trigger: thumbnail + ML + write DB |
-| REST API | API Gateway + Lambda `ecolens-api` | Queries, presigned upload, bulk tags, delete |
-| Auth | Cognito + API JWT authorizer | Member B configures pool; A attaches authorizer |
+| Process pipeline | Lambda `ecolens-process-upload` | S3 trigger: thumbnail + ML + DB write; infer-only for query-by-file |
+| REST API | API Gateway + Lambda `ecolens-api` | Upload URL, queries, tags, delete, notifications |
+| Auth | Cognito + JWT authorizer | Hosted UI login; protected routes |
+| Notifications | SNS + DynamoDB `ecolens-subscriptions` | Tag-based email alerts |
 
-Region example: `us-east-1` (match your Cognito pool).
+Use one region consistently (e.g. `us-east-1`, matching Cognito).
 
 ---
 
-## 2. Resource checklist
+## 2. Resources
 
 ### S3 bucket
 
-- Name: `ecolens-media-<team-id>` (globally unique)
-- Prefixes:
-  - `media/` — uploaded originals (trigger source)
-  - `thumbnails/` — generated JPEG thumbs
-  - `models/model.pt` — SpeciesNet weights (upload manually, ~200MB)
-- Enable: block public access (use presigned URLs or CloudFront later)
-- CORS (for browser PUT upload):
+- Name: globally unique, e.g. `ecolens-media-<team-id>`
+- Prefixes: `media/`, `thumbnails/`, `models/model.pt`, `query-scratch/` (temporary query-by-file)
+- CORS for browser PUT upload:
 
 ```json
 [
   {
     "AllowedHeaders": ["*"],
     "AllowedMethods": ["GET", "PUT", "POST", "HEAD"],
-    "AllowedOrigins": ["http://localhost:3000", "https://<your-amplify-domain>"],
+    "AllowedOrigins": ["http://localhost:3000", "https://<your-frontend-origin>"],
     "ExposeHeaders": ["ETag"]
   }
 ]
 ```
 
-### DynamoDB table `ecolens-files`
+### DynamoDB `ecolens-files`
 
 | Attribute | Type | Notes |
 |-----------|------|-------|
 | `checksum` | String (PK) | SHA-256 hex |
-| `filename` | String | S3 key basename |
+| `filename` | String | Basename |
 | `mediaType` | String | `image` / `video` |
-| `fileUrl` | String | HTTPS URL to object |
-| `thumbnailUrl` | String | May be empty for failed video thumb |
-| `tags` | List | Common names |
-| `tagCounts` | Map | String → Number |
+| `fileUrl` | String | HTTPS object URL |
+| `thumbnailUrl` | String | May be empty |
+| `tags` | List | Species tags |
+| `tagCounts` | Map | Tag → count |
 | `detectionSource` | String | e.g. `model:video:1fps` |
 | `createdAt` | String | ISO-8601 |
 
-Optional GSI: `tag-index` if you need fast tag queries at scale (MVP can scan table for prototype).
+### DynamoDB `ecolens-subscriptions`
 
-### DynamoDB table `ecolens-subscriptions` (Member D — SNS)
-
-| Attribute | Type | Notes |
-|-----------|------|-------|
-| `userSub` | String (PK) | Cognito `sub` |
-| `tag` | String (SK) | Lowercase tag name |
-| `email` | String | Notification email |
-| `createdAt` | String | ISO-8601 |
-
-See `docs/aws-sns-console-deploy.md` for SNS topic + IAM + API routes.
+See `docs/aws-sns-console-deploy.md`.
 
 ### Lambda `ecolens-process-upload`
 
-- **Trigger:** S3 `ObjectCreated` on prefix `media/`
-- **Runtime:** Python 3.12 **Container image** recommended (torch + opencv + onnx2torch)
-- **Timeout:** 5–15 min for long videos
-- **Memory:** 2048–3008 MB
-- **Env vars:**
+- **Trigger:** S3 `ObjectCreated` on `media/`
+- **Package:** Container image (torch + opencv)
+- **Also:** synchronous invoke from `ecolens-api` for `action: infer` (query-by-file)
+- **Env:** `MEDIA_BUCKET`, `TABLE_NAME`, `MODEL_S3_URI`, `SNS_TOPIC_ARN`, `SUBSCRIPTIONS_TABLE`, `SNS_NOTIFICATIONS_ENABLED`
 
-| Variable | Example |
-|----------|---------|
-| `MEDIA_BUCKET` | `ecolens-media-team1` |
-| `TABLE_NAME` | `ecolens-files` |
-| `MODEL_S3_URI` | `s3://ecolens-media-team1/models/model.pt` |
-| `LABELS_S3_URI` | `s3://.../labels.txt` (optional) |
-| `SNS_TOPIC_ARN` | `arn:aws:sns:...:ecolens-tag-alerts` (Member D) |
-| `SUBSCRIPTIONS_TABLE` | `ecolens-subscriptions` |
-| `SNS_NOTIFICATIONS_ENABLED` | `true` |
+### Lambda `ecolens-api`
 
-- **IAM:** `s3:GetObject` on bucket; `s3:PutObject` on `thumbnails/*`; `dynamodb:GetItem/PutItem` on table; `sns:Publish`; `dynamodb:Scan` on subscriptions table
-
-### Lambda `ecolens-api` + API Gateway
-
-- Routes: see `docs/api-contract.md`
-- Attach **Cognito JWT authorizer** (Member B)
-- CORS on API Gateway for `localhost:3000` and production origin
+- **Package:** Zip deployment
+- **Routes:** `docs/api-contract.md`
+- **Env:** `MEDIA_BUCKET`, `TABLE_NAME`, `PROCESS_UPLOAD_FUNCTION_NAME`, SNS vars, Cognito-related vars
+- **IAM:** S3 presigned, DynamoDB, `lambda:InvokeFunction` on process_upload, SNS, subscriptions table
 
 ---
 
-## 3. Migration map (local → AWS)
+## 3. Local → AWS mapping
 
-| Local (`app.py`) | AWS |
-|------------------|-----|
-| `POST /upload` saves file | Presigned PUT to `media/`; processing async |
-| `generated_tags` / `detect_tags` | `lambda/process_upload` copies `inference.py` |
-| `create_thumbnail` | Same logic, write to `thumbnails/` |
-| `create_video_thumbnail` + `detect_video_tags` | Same; 1 fps per assignment |
-| SQLite `files` | DynamoDB `PutItem` |
-| Dedup on checksum | `GetItem` before process |
-| `GET /files`, `/query/*` | `lambda/api/handler.py` |
-| Static `/media`, `/thumbnails` | S3 URLs (presigned GET or public read if allowed) |
+| Local | AWS |
+|-------|-----|
+| `POST /upload` saves file | Presigned PUT to `media/`; async processing |
+| `detect_tags` / thumbnails | `ecolens-process-upload` |
+| SQLite `files` | DynamoDB `ecolens-files` |
+| Dedup on checksum | `GetItem` before processing |
+| Queries, tags, delete | `ecolens-api` |
+| Static `/media` URLs | S3 HTTPS URLs |
 
 ---
 
-## 4. Implementation order (Member A)
+## 4. Suggested implementation order
 
-### Phase A — Storage (Day 1)
-
-1. Create S3 bucket + upload `model.pt` to `models/`
-2. Create DynamoDB table
-3. Test manual upload to `media/test.jpg`
-
-### Phase B — Process Lambda (Day 2–4)
-
-1. Copy `backend/inference.py` → `lambda/process_upload/inference.py`
-2. Implement `handler.py` (see skeleton)
-3. Deploy container image to Lambda
-4. Add S3 trigger; verify CloudWatch logs + DynamoDB row
-
-### Phase C — API (Day 5–6)
-
-1. Implement `lambda/api/handler.py` routes
-2. Wire API Gateway (HTTP API or REST)
-3. Share base URL with Member C
-
-### Phase D — Hardening (Day 7)
-
-1. Delete flow: remove S3 objects + DynamoDB item
-2. Bulk tags: `UpdateItem` on `tags` / `tagCounts`
-3. Document env vars in team report architecture diagram
+1. S3 bucket + model upload + DynamoDB `ecolens-files`
+2. Deploy `ecolens-process-upload` + S3 trigger; verify tags in DynamoDB
+3. Deploy `ecolens-api` + API Gateway + Cognito authorizer
+4. Point frontend `VITE_API_BASE_URL` at API Gateway
+5. SNS topic, subscriptions table, notification routes — `docs/aws-sns-console-deploy.md`
+6. GCP Cloud Run webhook (optional second cloud)
 
 ---
 
-## 5. Model swap (assignment requirement)
+## 5. Model swap
 
-Do **not** bake model path into code.
-
-1. Upload new `model.pt` to S3 (e.g. `models/model_v2.pt`)
-2. Update Lambda env `MODEL_S3_URI`
-3. Redeploy not required if code loads path from env only
+1. Upload new weights to S3 (e.g. `models/model_v2.pt`)
+2. Update `MODEL_S3_URI` on `ecolens-process-upload`
+3. No code redeploy if the handler reads the URI from env only
 
 ---
 
-## 6. torch / dependency note
-
-Zip deployment often exceeds Lambda size limits. Recommended:
+## 6. Container image (process_upload)
 
 ```dockerfile
-# lambda/process_upload/Dockerfile (outline)
 FROM public.ecr.aws/lambda/python:3.12
 COPY requirements.txt .
-RUN pip install -r requirements.txt
-COPY handler.py inference.py ./
+RUN pip install --no-cache-dir -r requirements.txt
+COPY handler.py inference.py sns_notifications.py ${LAMBDA_TASK_ROOT}/
 CMD ["handler.handler"]
 ```
 
-Dependencies mirror `backend/requirements.txt` + `onnx2torch`, `opencv-python-headless`.
+Build from repo root; see `lambda/README.md`.
 
 ---
 
-## 7. Demo script (AWS path)
+## 7. Verification
 
-1. Login via Cognito Hosted UI (`http://localhost:3000`)
-2. Request presigned URL → upload image to S3
-3. Wait ~10s → `GET /files` shows tags + `detectionSource: model:image`
-4. `POST /query/species` with `{ "species": "cattle" }` → returns items
-5. Show DynamoDB item + S3 thumbnail in console
-
----
-
-## 8. Handoff to other members
-
-| Member | Needs from A |
-|--------|----------------|
-| B | API Gateway ID, authorizer attachment, region |
-| C | API base URL, upload flow (presigned vs multipart) |
-| D | SNS topic ARN, subscriptions table, notification routes — see `docs/aws-sns-console-deploy.md` |
+1. Sign in via Cognito
+2. Presigned upload → wait for processing → `GET /files` shows tags
+3. Run species / tag-count / query-by-file queries
+4. Subscribe to a tag → confirm SNS email → upload matching media → receive alert
 
 ---
 
-## 9. Local dev still valid
+## 8. Local development
 
-Keep `backend/` for fast iteration. Parity rule: **same JSON** as `docs/api-contract.md`.  
-When AWS endpoint is ready, frontend changes only `API Base URL`.
+Keep `backend/` for fast iteration. JSON shapes match `docs/api-contract.md`.  
+Switch the frontend by changing `VITE_API_BASE_URL` only.
