@@ -6,17 +6,26 @@ A multi-cloud serverless wildlife media platform for FIT5225. Authenticated user
 
 ## Architecture
 
+Two AWS Lambda functions serve different roles — do not conflate them:
+
+| Lambda | Deploy | Trigger | Role |
+|--------|--------|---------|------|
+| **`ecolens-api`** | Zip package | API Gateway (HTTP) | REST API: presigned upload, queries, bulk tags, delete, SNS subscribe |
+| **`ecolens-process-upload`** | Container image (torch + opencv) | S3 `ObjectCreated` on `media/` **or** synchronous invoke from `ecolens-api` | ML inference, thumbnails, DynamoDB write, SNS + GCP notify |
+
+### Upload path (persist media)
+
 ```text
 User (browser)
   │
   ├─ AWS Cognito Hosted UI ──► JWT (id token)
   │
-  └─ React dashboard ──► API Gateway + Lambda (AWS)
+  └─ React dashboard ──► API Gateway ──► ecolens-api (zip)
                               │
                               ├─ POST /upload ──► presigned PUT ──► S3 media/
                               │                                      │
                               │                                      ▼
-                              │                         process_upload Lambda
+                              │                         ecolens-process-upload (container)
                               │                           • checksum dedup
                               │                           • thumbnail / 1 fps video
                               │                           • ML tags (model.pt)
@@ -30,12 +39,36 @@ User (browser)
                               └─ DynamoDB: ecolens-files, ecolens-subscriptions
 ```
 
+### Query-by-file path (infer only — no S3 / no DB write)
+
+`POST /query/by-file` does **not** follow the upload pipeline. The query file is never stored.
+
+```text
+React dashboard
+  │
+  └─ POST /query/by-file (multipart file)
+        │
+        ▼
+     ecolens-api
+        │  if checksum already in DynamoDB → reuse stored tags (skip ML)
+        │  else synchronous Lambda.invoke({ action: "infer", contentBase64, filename })
+        ▼
+     ecolens-process-upload  (infer-only branch — no S3 Put, no DynamoDB Put)
+        │  returns { tags, tagCounts, detectionSource }
+        ▼
+     ecolens-api scans DynamoDB ecolens-files for items whose tags match query tags (AND)
+        │
+        └─► JSON response to frontend (queryTags, count, items[])
+```
+
+Set `PROCESS_UPLOAD_FUNCTION_NAME=ecolens-process-upload` on **ecolens-api** and grant `lambda:InvokeFunction` on the processing Lambda.
+
 | Component | Cloud | Role |
 |-----------|-------|------|
 | Cognito User Pool | AWS | Sign-up, login, JWT (required by assignment) |
-| API Gateway + `lambda/api` | AWS | REST API: files, queries, presigned upload, SNS subscribe, delete |
+| API Gateway + **`ecolens-api`** (`lambda/api`) | AWS | Zip Lambda: REST routes, presigned URLs, invokes processing Lambda for `/query/by-file` |
 | S3 | AWS | Original media, thumbnails, `models/model.pt` |
-| `lambda/process_upload` | AWS | S3 trigger: inference, DynamoDB, SNS + GCP webhook |
+| **`ecolens-process-upload`** (`lambda/process_upload`) | AWS | Container Lambda: S3 upload pipeline **or** infer-only invoke (`action: infer`) |
 | DynamoDB | AWS | `ecolens-files` (media metadata), `ecolens-subscriptions` (SNS tags) |
 | SNS | AWS | Per-tag email alerts for subscribed users |
 | `gcp-notify-service` | GCP | Second cloud: webhook notifications + Cognito JWT demo endpoints |
@@ -57,8 +90,8 @@ backend/                  Local FastAPI + SQLite (same API shape as AWS; offline
   inference.py            ML tagging (mirrored in lambda/process_upload)
 
 lambda/
-  api/                    API Gateway Lambda + sns_notifications.py
-  process_upload/         S3-triggered processor (container image: torch + opencv)
+  api/                    ecolens-api — zip deploy, API Gateway handler + sns_notifications.py
+  process_upload/         ecolens-process-upload — container (S3 trigger + infer-only invoke)
     Dockerfile            Build from repo root to bundle labels.txt
 
 gcp-notify-service/       GCP Cloud Run FastAPI service (Member B second cloud)
@@ -109,7 +142,9 @@ Open **http://localhost:3000** → Sign in with Cognito → **Dashboard**.
 | `VITE_UPLOAD_MODE` | `presigned` for AWS (default); `local` for FastAPI multipart |
 | `VITE_COGNITO_REDIRECT_URI` | Must match Cognito callback URL exactly (e.g. `http://localhost:3000/`) |
 
-**Upload flow (AWS):** Dashboard → presigned URL from API → PUT to S3 → `process_upload` Lambda → poll gallery until tags appear.
+**Upload flow (AWS):** Dashboard → `ecolens-api` presigned URL → PUT to S3 → **ecolens-process-upload** (S3 trigger) → poll gallery until tags appear.
+
+**Query-by-file (AWS):** Dashboard → `POST /query/by-file` → **ecolens-api** → (optional) invoke **ecolens-process-upload** with `action: infer` → scan DynamoDB → return matches. Query file is **not** written to S3 or the database.
 
 **Browse modes:** **Explore** (all media) and **My Uploads** (`GET /files?user=me`, keyed by `uploadedBy` from S3 object metadata).
 
@@ -162,7 +197,9 @@ uvicorn main:app --reload --port 8080
 
 Full checklist: [`docs/aws-deploy.md`](docs/aws-deploy.md).
 
-**Build `process_upload` container from repo root** (bundles `labels.txt` for common-name tags):
+**`ecolens-api` (zip):** deploy `lambda/api/` (handler + `sns_notifications.py`) to Lambda and attach to API Gateway with Cognito JWT authorizer. Env: `MEDIA_BUCKET`, `TABLE_NAME`, `PROCESS_UPLOAD_FUNCTION_NAME=ecolens-process-upload`, plus SNS vars (see [`lambda/README.md`](lambda/README.md)).
+
+**`ecolens-process-upload` (container):** build from repo root (bundles `labels.txt` for common-name tags):
 
 ```bash
 docker buildx build --platform linux/amd64 --provenance=false --sbom=false \
@@ -170,7 +207,7 @@ docker buildx build --platform linux/amd64 --provenance=false --sbom=false \
   -t <account>.dkr.ecr.us-east-1.amazonaws.com/ecolens-process-upload:latest --push .
 ```
 
-Alternatively set `LABELS_S3_URI=s3://.../labels.txt` on the Lambda without rebundling.
+Alternatively set `LABELS_S3_URI=s3://.../labels.txt` on the processing Lambda without rebundling.
 
 **SNS setup:** [`docs/aws-sns-console-deploy.md`](docs/aws-sns-console-deploy.md) — topic ARN, `ecolens-subscriptions` table, routes on API Gateway, env vars on **both** `ecolens-api` and `ecolens-process-upload` Lambdas.
 
@@ -183,7 +220,7 @@ Two independent paths (both valid for the multi-cloud story):
 | **AWS SNS** | Upload or bulk tags match a subscribed tag | Dashboard → **Tag notifications** → email (confirm SNS subscription first) |
 | **GCP Cloud Run** | Lambda webhook when tags fuzzy-match `WATCHED_TAGS` | Cloud Run logs; `GET /notifications` with JWT |
 
-Tag matching uses **fuzzy substring** logic (e.g. `dingo` ↔ `canis dingo`, `wombat` ↔ `common wombat`). ML output quality depends on `labels.txt` being loaded in `process_upload` (see Dockerfile / `LABELS_S3_URI`).
+Tag matching uses **fuzzy substring** logic (e.g. `dingo` ↔ `canis dingo`, `wombat` ↔ `common wombat`). ML output quality depends on `labels.txt` being loaded in `ecolens-process-upload` (see Dockerfile / `LABELS_S3_URI`).
 
 **Note:** `koala` is not in the current model class list; use images the model recognises or add tags manually via bulk tag API.
 
@@ -195,8 +232,9 @@ All protected routes require `Authorization: Bearer <Cognito id token>`.
 |--------|------|-------------|
 | GET | `/health`, `/auth/config`, `/auth/me` | Health and auth |
 | GET | `/files`, `/files?user=me` | List media |
-| POST | `/upload` | Multipart (local) or presigned JSON (AWS) |
-| POST | `/query/species`, `/query/tags-count`, `/query/thumbnail`, `/query/by-file` | Queries |
+| POST | `/upload` | Multipart (local) or presigned JSON (AWS via **ecolens-api**) |
+| POST | `/query/species`, `/query/tags-count`, `/query/thumbnail` | Queries (DynamoDB only) |
+| POST | `/query/by-file` | Multipart query file → **ecolens-api** invokes **ecolens-process-upload** (infer-only) → DynamoDB match; file not stored |
 | POST | `/tags/bulk`, `/files/delete` | Bulk tag edit, delete |
 | GET/POST | `/notifications/*` | SNS tag subscriptions |
 
@@ -216,8 +254,8 @@ Full schemas: [`docs/api-contract.md`](docs/api-contract.md).
 
 1. Start AWS Academy lab.
 2. `cd frontend && npm run dev` → http://localhost:3000
-3. Cognito login → upload image → tags + thumbnail in gallery
-4. Run a query (species or tag count AND)
+3. Cognito login → upload image → tags + thumbnail in gallery (**upload path**)
+4. Run a query (species or tag count AND); **Find by file** tab (**query-by-file path** — no new S3 object)
 5. Bulk add/remove tag or delete own file
 6. Subscribe to a tag → upload matching media → SNS email **or** GCP log `matchedTags`
 7. Optional: `curl` GCP `/auth/me` with JWT (cross-cloud auth demo)
