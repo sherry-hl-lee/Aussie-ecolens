@@ -1,3 +1,27 @@
+import { useState } from 'react';
+
+function GalleryThumb({ item, isVideo }) {
+  const thumb = item.thumbnailUrl || item.fileUrl;
+  const [src, setSrc] = useState(thumb);
+
+  if (!src || isVideo) {
+    return <div className="gallery-video-placeholder">{isVideo ? '▶ Video' : 'No preview'}</div>;
+  }
+
+  return (
+    <img
+      src={src}
+      alt={item.filename || 'Wildlife thumbnail'}
+      loading="lazy"
+      onError={() => {
+        if (item.fileUrl && src !== item.fileUrl) {
+          setSrc(item.fileUrl);
+        }
+      }}
+    />
+  );
+}
+
 export default function MediaGallery({
   items,
   selectedUrls,
@@ -29,7 +53,6 @@ export default function MediaGallery({
   return (
     <div className="gallery">
       {items.map((item) => {
-        const thumb = item.thumbnailUrl || item.fileUrl;
         const isVideo = item.mediaType === 'video';
         const selected = selectedUrls.has(item.fileUrl);
         const tags = item.tags || [];
@@ -55,11 +78,7 @@ export default function MediaGallery({
               </div>
             )}
             <button type="button" className="gallery-thumb-btn" onClick={() => onOpenItem(item)}>
-              {thumb && !isVideo ? (
-                <img src={thumb} alt={item.filename || 'Wildlife thumbnail'} loading="lazy" />
-              ) : (
-                <div className="gallery-video-placeholder">{isVideo ? '▶ Video' : 'No preview'}</div>
-              )}
+              <GalleryThumb item={item} isVideo={isVideo} />
               <div className="gallery-thumb-hover-tags" aria-hidden="true">
                 {tags.length ? (
                   tags.map((tag) => (

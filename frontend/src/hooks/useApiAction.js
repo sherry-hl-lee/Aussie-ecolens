@@ -9,6 +9,10 @@ function formatError(err) {
     if (err.status === 408) {
       return err.message;
     }
+    if (err.status === 401) {
+      const detail = err.data?.detail || err.data?.message;
+      return detail || 'Sign in required. Please sign out and sign in again.';
+    }
     if (err.status === 403) {
       const detail = err.data?.detail || err.data?.message;
       return detail || 'You do not have permission for this action.';
@@ -19,7 +23,8 @@ function formatError(err) {
     }
     const detail = err.data?.detail || err.data?.message;
     if (detail) {
-      return `${err.status} ${err.message}: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`;
+      const detailText = typeof detail === 'string' ? detail : JSON.stringify(detail);
+      return `${err.status}: ${detailText}`;
     }
     if (err.data) {
       return `${err.message} ${JSON.stringify(err.data)}`;
@@ -28,6 +33,8 @@ function formatError(err) {
   }
   return err?.message || String(err);
 }
+
+export { formatError };
 
 export function useApiAction(getToken) {
   const [busy, setBusy] = useState(false);
