@@ -10,6 +10,6 @@ FROM public.ecr.aws/lambda/python:3.12
 COPY requirements.txt ${LAMBDA_TASK_ROOT}/
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY handler.py inference.py ${LAMBDA_TASK_ROOT}/
+COPY handler.py inference.py sns_notifications.py ${LAMBDA_TASK_ROOT}/
 
 CMD ["handler.handler"]
