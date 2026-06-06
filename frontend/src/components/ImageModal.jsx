@@ -1,5 +1,6 @@
-export default function ImageModal({ title, imageUrl, fileUrl, onClose }) {
+export default function ImageModal({ title, imageUrl, fileUrl, mediaType, onClose }) {
   if (!imageUrl && !fileUrl) return null;
+  const isVideo = mediaType === 'video';
 
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={onClose}>
@@ -11,7 +12,12 @@ export default function ImageModal({ title, imageUrl, fileUrl, onClose }) {
           </button>
         </header>
         <div className="modal-body">
-          {imageUrl ? (
+          {isVideo && fileUrl ? (
+            <video src={fileUrl} controls className="modal-video" playsInline>
+              <track kind="captions" />
+            </video>
+          ) : null}
+          {!isVideo && imageUrl ? (
             <img src={imageUrl} alt={title || 'Full size preview'} className="modal-image" />
           ) : null}
           {fileUrl ? (
