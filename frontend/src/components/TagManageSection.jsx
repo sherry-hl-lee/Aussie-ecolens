@@ -75,8 +75,8 @@ export default function TagManageSection({
 
       <label htmlFor="bulk-op">Operation</label>
       <select id="bulk-op" value={operation} disabled={busy} onChange={(e) => setOperation(e.target.value)}>
-        <option value="1">Add tags (operation = 1)</option>
-        <option value="0">Remove tags (operation = 0)</option>
+        <option value="1">Add tags</option>
+        <option value="0">Remove tags</option>
       </select>
 
       <button type="button" className="btn-primary btn-block" disabled={busy} onClick={handleBulk}>

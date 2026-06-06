@@ -15,6 +15,7 @@ import {
 import { useAuth } from '../auth/AuthContext.jsx';
 import { isItemOwnedByUser } from '../auth/authUtils.js';
 import { Alert } from '../components/Alert.jsx';
+import ConfirmModal from '../components/ConfirmModal.jsx';
 import ImageModal from '../components/ImageModal.jsx';
 import MediaGallery from '../components/MediaGallery.jsx';
 import QueryPanel from '../components/QueryPanel.jsx';
@@ -36,6 +37,7 @@ export default function DashboardPage() {
   const [selectedUrls, setSelectedUrls] = useState(() => new Set());
   const [lastResponse, setLastResponse] = useState(null);
   const [modal, setModal] = useState(null);
+  const [deleteConfirmCount, setDeleteConfirmCount] = useState(null);
   const [listLoading, setListLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
 
@@ -281,19 +283,22 @@ export default function DashboardPage() {
     }
   }
 
-  async function handleDeleteSelected() {
+  function handleDeleteSelected() {
     const urls = ownedSelectedUrls();
     if (!urls.length) {
       setError('Select at least one of your own files to delete.');
       return;
     }
-    if (
-      !window.confirm(
-        `Delete ${urls.length} file(s) and their thumbnails from storage and database? This cannot be undone.`,
-      )
-    ) {
+    setDeleteConfirmCount(urls.length);
+  }
+
+  async function executeDeleteSelected() {
+    const urls = ownedSelectedUrls();
+    if (!urls.length) {
+      setDeleteConfirmCount(null);
       return;
     }
+    setDeleteConfirmCount(null);
 
     const data = await run((token) => deleteFiles({ urls }, token), {
       successMessage: `Deleted ${urls.length} file(s).`,
@@ -352,7 +357,7 @@ export default function DashboardPage() {
           </div>
           <div className="stat-chip">
             <strong>{selectedOwnedCount}</strong>
-            <span>Selected (mine)</span>
+            <span>Selected</span>
           </div>
           <div className="stat-chip">
             <strong>{busy ? '…' : 'Ready'}</strong>
@@ -363,6 +368,11 @@ export default function DashboardPage() {
         <div className="dashboard-grid">
           <div className="dashboard-col">
             <UploadSection busy={uploading} onUpload={handleUpload} />
+            <NotificationSection
+              busy={busy}
+              getToken={getToken}
+              onNotice={(message) => setNotice(message)}
+            />
           </div>
           <div className="dashboard-col">
             <QueryPanel
@@ -380,11 +390,6 @@ export default function DashboardPage() {
               onDeleteSelected={handleDeleteSelected}
               onSelectAll={selectAllOwned}
               onClearSelection={clearSelection}
-            />
-            <NotificationSection
-              busy={busy}
-              getToken={getToken}
-              onNotice={(message) => setNotice(message)}
             />
           </div>
         </div>
@@ -450,6 +455,18 @@ export default function DashboardPage() {
           fileUrl={modal.fileUrl}
           mediaType={modal.mediaType}
           onClose={() => setModal(null)}
+        />
+      ) : null}
+
+      {deleteConfirmCount ? (
+        <ConfirmModal
+          title="Friendly Reminder"
+          message={`Are you sure you want to delete ${deleteConfirmCount} file(s) and their thumbnails and database records? This action cannot be undone.`}
+          confirmLabel="Delete"
+          cancelLabel="Cancel"
+          busy={busy}
+          onConfirm={executeDeleteSelected}
+          onCancel={() => setDeleteConfirmCount(null)}
         />
       ) : null}
     </div>

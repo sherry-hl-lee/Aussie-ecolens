@@ -1,7 +1,7 @@
 import { useState } from 'react';
 
 const TABS = [
-  { id: 'tags', label: 'Tag counts (AND)' },
+  { id: 'tags', label: 'Tag counts' },
   { id: 'file', label: 'Find by file' },
   { id: 'lookup', label: 'Thumbnail / species' },
 ];

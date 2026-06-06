@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  getApiBaseUrl,
   getAuthConfig,
   listNotificationSubscriptions,
   subscribeNotifications,
@@ -21,7 +20,7 @@ export default function NotificationSection({ busy, getToken, onNotice }) {
     try {
       const token = await getToken();
       if (!token) {
-        setError('登录已过期，请点击右上角 Sign out 后重新登录。');
+        setError('Your session has expired. Sign out (top right), then sign in again.');
         setLoading(false);
         return;
       }
@@ -32,10 +31,10 @@ export default function NotificationSection({ busy, getToken, onNotice }) {
     } catch (err) {
       const msg = err?.message || 'Failed to load subscriptions';
       if (err?.status === 401 || String(msg).includes('401')) {
-        setError('认证失败（401）：请 Sign out 后重新登录，再试 Subscribe。');
+        setError('Authentication failed (401). Sign out, sign in again, then try Subscribe.');
       } else if (err?.status === 500 || String(msg).includes('500')) {
         setError(
-          '服务器错误（500）：通常是 DynamoDB 表 ecolens-subscriptions 未创建，或 Lambda IAM 缺少 DynamoDB 权限。请让 Member A 检查 CloudWatch 日志。',
+          'Server error (500). Often the ecolens-subscriptions DynamoDB table is missing, or Lambda IAM lacks DynamoDB permissions. Ask Member A to check CloudWatch logs.',
         );
         try {
           const config = await getAuthConfig();
@@ -46,7 +45,7 @@ export default function NotificationSection({ busy, getToken, onNotice }) {
       } else {
         setError(
           msg === 'Failed to fetch'
-            ? '无法连接后端 API。请确认 backend 已启动：uvicorn app:app --port 8001（建议 API 地址用 http://127.0.0.1:8001）'
+            ? 'Cannot reach the API. Start the backend: uvicorn app:app --port 8001 (use http://127.0.0.1:8001 in VITE_API_BASE_URL).'
             : msg,
         );
       }
@@ -112,8 +111,8 @@ export default function NotificationSection({ busy, getToken, onNotice }) {
         </span>
         Tag notifications (SNS)
       </h2>
-      <p className="muted">
-        Subscribe to species tags and receive email when new media matches. One AWS SNS confirm per inbox; each tag add/remove sends its own email; only your inbox receives your notifications.
+      <p className="muted notification-lead">
+        Subscribe to species tags and get email when new media matches.
       </p>
 
       {loading ? <p className="muted">Loading subscriptions…</p> : null}
@@ -150,9 +149,8 @@ export default function NotificationSection({ busy, getToken, onNotice }) {
 
       <div className="notification-status">
         <span className={`status-pill ${snsConfigured ? 'status-pill--ok' : 'status-pill--warn'}`}>
-          {snsConfigured ? 'SNS configured (real AWS emails)' : 'SNS not configured (simulated logs)'}
+          {snsConfigured ? 'SNS configured' : 'SNS not configured (simulated)'}
         </span>
-        <p className="muted api-base-hint">API: {getApiBaseUrl()}</p>
       </div>
 
       {subscriptions.length ? (
