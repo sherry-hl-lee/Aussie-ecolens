@@ -51,6 +51,7 @@ COGNITO_REGION = os.getenv("COGNITO_REGION", "").strip()
 COGNITO_USER_POOL_ID = os.getenv("COGNITO_USER_POOL_ID", "").strip()
 COGNITO_APP_CLIENT_ID = os.getenv("COGNITO_APP_CLIENT_ID", "").strip()
 AUTH_REQUIRED = bool(COGNITO_REGION and COGNITO_USER_POOL_ID)
+LOCAL_AUTH_RELAXED = os.getenv("LOCAL_AUTH_RELAXED", "").strip().lower() in {"1", "true", "yes"}
 SNS_TOPIC_ARN = os.getenv("SNS_TOPIC_ARN", "").strip()
 SNS_NOTIFICATIONS_ENABLED = os.getenv("SNS_NOTIFICATIONS_ENABLED", "true").strip().lower() not in {
     "0",
@@ -146,15 +147,25 @@ def verify_cognito_token(token: str) -> dict[str, Any]:
     return claims
 
 
+def _dev_user_claims() -> dict[str, Any]:
+    return {"sub": "dev-user", "email": "dev-user@dev.local", "mode": "dev"}
+
+
 def require_auth(request: Request) -> dict[str, Any]:
     auth = request.headers.get("Authorization", "")
     if AUTH_REQUIRED:
         token = parse_bearer_token(request)
         try:
             return verify_cognito_token(token)
-        except HTTPException:
+        except HTTPException as exc:
+            if LOCAL_AUTH_RELAXED:
+                logger.warning("Cognito auth failed (%s); LOCAL_AUTH_RELAXED → dev-user", exc.detail)
+                return _dev_user_claims()
             raise
         except JWTError as exc:
+            if LOCAL_AUTH_RELAXED:
+                logger.warning("Invalid Cognito token (%s); LOCAL_AUTH_RELAXED → dev-user", exc)
+                return _dev_user_claims()
             raise HTTPException(status_code=401, detail=f"Invalid Cognito token: {exc}") from exc
     cognito_configured = bool(COGNITO_REGION and COGNITO_USER_POOL_ID)
     if cognito_configured and auth.startswith("Bearer "):
@@ -164,7 +175,7 @@ def require_auth(request: Request) -> dict[str, Any]:
                 return verify_cognito_token(token)
             except (JWTError, HTTPException, URLError, OSError, ValueError):
                 logger.warning("Cognito token ignored in dev mode; using dev-user fallback")
-    return {"sub": "dev-user", "email": "dev-user@dev.local", "mode": "dev"}
+    return _dev_user_claims()
 
 
 def owner_email(claims: dict[str, Any]) -> str:
@@ -378,6 +389,18 @@ def normalize_tags(tags: list[Any]) -> list[str]:
     return sorted({str(t).strip().lower() for t in tags if str(t).strip()})
 
 
+def tag_fuzzy_match(a: str, b: str) -> bool:
+    """True when either tag contains the other (e.g. dingo ↔ canis dingo)."""
+    left, right = a.lower().strip(), b.lower().strip()
+    if not left or not right:
+        return False
+    return left in right or right in left
+
+
+def subscription_tag_matches_file_tags(sub_tag: str, file_tags: set[str]) -> bool:
+    return any(tag_fuzzy_match(sub_tag, file_tag) for file_tag in file_tags)
+
+
 def list_user_subscriptions(user_sub: str) -> list[dict[str, Any]]:
     with db() as conn:
         rows = conn.execute(
@@ -395,7 +418,48 @@ def list_user_subscriptions(user_sub: str) -> list[dict[str, Any]]:
     ]
 
 
-def subscribe_tags(user_sub: str, email: str, tags: list[str]) -> list[str]:
+def build_subscribe_message(email: str, tag: str) -> tuple[str, str]:
+    subject = f"EcoLens: subscribed to tag '{tag}'"
+    body = (
+        f"Your EcoLens tag subscription is active.\n\n"
+        f"Tag: {tag}\n"
+        f"Notification email: {email}\n\n"
+        f"You will receive alerts when new media matches this tag.\n"
+        f"If this is your first time, also confirm the separate AWS SNS email when it arrives.\n"
+    )
+    return subject, body
+
+
+def build_unsubscribe_message(email: str, tag: str) -> tuple[str, str]:
+    subject = f"EcoLens: unsubscribed from tag '{tag}'"
+    body = (
+        f"Your EcoLens tag subscription has been removed.\n\n"
+        f"Tag: {tag}\n"
+        f"Notification email: {email}\n\n"
+        f"You will no longer receive alerts for new media matching this tag.\n"
+    )
+    return subject, body
+
+
+def notify_subscribe_confirmation(email: str, tags: list[str]) -> int:
+    sent = 0
+    for tag in normalize_tags(tags):
+        subject, body = build_subscribe_message(email, tag)
+        publish_sns_notification(email, subject, body, {tag})
+        sent += 1
+    return sent
+
+
+def notify_unsubscribe_confirmation(email: str, tags: list[str]) -> int:
+    sent = 0
+    for tag in normalize_tags(tags):
+        subject, body = build_unsubscribe_message(email, tag)
+        publish_sns_notification(email, subject, body, {tag})
+        sent += 1
+    return sent
+
+
+def subscribe_tags(user_sub: str, email: str, tags: list[str]) -> tuple[list[str], int]:
     subscribed: list[str] = []
     with db() as conn:
         for tag in normalize_tags(tags):
@@ -409,39 +473,44 @@ def subscribe_tags(user_sub: str, email: str, tags: list[str]) -> list[str]:
             )
             subscribed.append(tag)
             register_sns_email_filter(email, tag)
-    return subscribed
+    notifications_sent = notify_subscribe_confirmation(email, subscribed) if subscribed else 0
+    return subscribed, notifications_sent
 
 
-def unsubscribe_tags(user_sub: str, tags: list[str]) -> list[str]:
+def unsubscribe_tags(user_sub: str, tags: list[str]) -> tuple[list[str], int]:
     unsubscribed: list[str] = []
+    notifications_sent = 0
     with db() as conn:
         for tag in normalize_tags(tags):
+            row = conn.execute(
+                "SELECT email FROM tag_subscriptions WHERE user_sub = ? AND tag = ?",
+                (user_sub, tag),
+            ).fetchone()
+            if not row:
+                continue
+            email = str(row["email"]).lower()
             cur = conn.execute(
                 "DELETE FROM tag_subscriptions WHERE user_sub = ? AND tag = ?",
                 (user_sub, tag),
             )
             if cur.rowcount:
                 unsubscribed.append(tag)
-    return unsubscribed
+                notifications_sent += notify_unsubscribe_confirmation(email, [tag])
+    return unsubscribed, notifications_sent
 
 
 def matching_subscriptions(file_tags: list[str]) -> dict[str, set[str]]:
-    normalized = normalize_tags(file_tags)
+    normalized = set(normalize_tags(file_tags))
     if not normalized:
         return {}
-    placeholders = ",".join("?" for _ in normalized)
     with db() as conn:
-        rows = conn.execute(
-            f"""
-            SELECT email, tag
-            FROM tag_subscriptions
-            WHERE tag IN ({placeholders})
-            """,
-            normalized,
-        ).fetchall()
+        rows = conn.execute("SELECT email, tag FROM tag_subscriptions").fetchall()
     recipients: dict[str, set[str]] = {}
     for row in rows:
-        recipients.setdefault(row["email"], set()).add(row["tag"])
+        sub_tag = str(row["tag"]).lower()
+        if not subscription_tag_matches_file_tags(sub_tag, normalized):
+            continue
+        recipients.setdefault(row["email"], set()).add(sub_tag)
     return recipients
 
 
@@ -717,7 +786,9 @@ def query_species(payload: dict[str, Any], claims: dict[str, Any] = Depends(requ
     species = str(payload.get("species", "")).strip().lower()
     if not species:
         raise HTTPException(status_code=400, detail="species is required")
-    results = [it for it in all_items() if species in [t.lower() for t in it["tags"]]]
+    results = [
+        it for it in all_items() if any(tag_fuzzy_match(species, str(t)) for t in it["tags"])
+    ]
     return {"count": len(results), "items": results}
 
 
@@ -727,7 +798,10 @@ def query_tags_count(payload: dict[str, Any], claims: dict[str, Any] = Depends(r
     results: list[dict[str, Any]] = []
     for item in all_items():
         counts = {k.lower(): int(v) for k, v in item["tagCounts"].items()}
-        if all(counts.get(tag, 0) >= min_count for tag, min_count in requested.items()):
+        if all(
+            any(tag_fuzzy_match(tag, tag_key) and count >= min_count for tag_key, count in counts.items())
+            for tag, min_count in requested.items()
+        ):
             results.append(item)
     return {"count": len(results), "items": results}
 
@@ -759,8 +833,8 @@ async def query_by_file(file: UploadFile = File(...), claims: dict[str, Any] = D
     required = {t.lower() for t in tags}
     results = []
     for item in all_items():
-        item_tags = {t.lower() for t in item["tags"]}
-        if required.issubset(item_tags):
+        item_tags = {str(t).lower() for t in item["tags"]}
+        if any(tag_fuzzy_match(query_tag, item_tag) for query_tag in required for item_tag in item_tags):
             results.append(item)
     return {"queryTags": tags, "count": len(results), "items": results}
 
@@ -785,11 +859,12 @@ def subscribe_notification(payload: dict[str, Any], claims: dict[str, Any] = Dep
         raise HTTPException(status_code=400, detail="tags is required")
     user_sub = user_sub_from_claims(claims)
     email = user_email_from_claims(claims, str(payload.get("email", "")))
-    subscribed = subscribe_tags(user_sub, email, tags)
+    subscribed, notifications_sent = subscribe_tags(user_sub, email, tags)
     return {
         "subscribed": subscribed,
         "email": email,
         "snsConfigured": bool(SNS_TOPIC_ARN),
+        "notificationsSent": notifications_sent,
     }
 
 
@@ -799,8 +874,8 @@ def unsubscribe_notification(payload: dict[str, Any], claims: dict[str, Any] = D
     if not tags:
         raise HTTPException(status_code=400, detail="tags is required")
     user_sub = user_sub_from_claims(claims)
-    unsubscribed = unsubscribe_tags(user_sub, tags)
-    return {"unsubscribed": unsubscribed}
+    unsubscribed, notifications_sent = unsubscribe_tags(user_sub, tags)
+    return {"unsubscribed": unsubscribed, "notificationsSent": notifications_sent}
 
 
 @app.post("/tags/bulk")

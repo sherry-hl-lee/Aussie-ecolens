@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
+  getApiBaseUrl,
+  getAuthConfig,
   listNotificationSubscriptions,
   subscribeNotifications,
   unsubscribeNotifications,
@@ -23,14 +25,24 @@ export default function NotificationSection({ busy, getToken, onNotice }) {
         setLoading(false);
         return;
       }
-      const data = await listNotificationSubscriptions(token);
+      const [config, data] = await Promise.all([getAuthConfig(), listNotificationSubscriptions(token)]);
+      setSnsConfigured(Boolean(config?.snsConfigured ?? data.snsConfigured));
       setEmail(data.email || '');
-      setSnsConfigured(Boolean(data.snsConfigured));
       setSubscriptions(Array.isArray(data.subscriptions) ? data.subscriptions : []);
     } catch (err) {
       const msg = err?.message || 'Failed to load subscriptions';
       if (err?.status === 401 || String(msg).includes('401')) {
         setError('认证失败（401）：请 Sign out 后重新登录，再试 Subscribe。');
+      } else if (err?.status === 500 || String(msg).includes('500')) {
+        setError(
+          '服务器错误（500）：通常是 DynamoDB 表 ecolens-subscriptions 未创建，或 Lambda IAM 缺少 DynamoDB 权限。请让 Member A 检查 CloudWatch 日志。',
+        );
+        try {
+          const config = await getAuthConfig();
+          setSnsConfigured(Boolean(config?.snsConfigured));
+        } catch {
+          /* ignore */
+        }
       } else {
         setError(
           msg === 'Failed to fetch'
@@ -64,10 +76,11 @@ export default function NotificationSection({ busy, getToken, onNotice }) {
     try {
       const token = await getToken();
       const data = await subscribeNotifications({ tags, email }, token);
+      const tagList = data.subscribed?.join(', ') || tags.join(', ');
       onNotice?.(
         data.snsConfigured
-          ? `Subscribed to ${data.subscribed?.join(', ') || tags.join(', ')}. Check your inbox to confirm SNS email.`
-          : `Subscribed locally to ${data.subscribed?.join(', ') || tags.join(', ')} (SNS not configured — notifications logged).`,
+          ? `Subscribed to ${tagList}. AWS confirmation email sent (${data.notificationsSent ?? 0}). Check inbox (confirm SNS if first time).`
+          : `Subscribed to ${tagList} (${data.notificationsSent ?? 0} notification(s) logged).`,
       );
       await refresh();
     } catch (err) {
@@ -79,8 +92,12 @@ export default function NotificationSection({ busy, getToken, onNotice }) {
     setError(null);
     try {
       const token = await getToken();
-      await unsubscribeNotifications({ tags: [tag] }, token);
-      onNotice?.(`Unsubscribed from ${tag}.`);
+      const data = await unsubscribeNotifications({ tags: [tag] }, token);
+      onNotice?.(
+        snsConfigured
+          ? `Unsubscribed from ${tag}. AWS confirmation email sent (${data.notificationsSent ?? 0}).`
+          : `Unsubscribed from ${tag} (${data.notificationsSent ?? 0} notification(s) logged).`,
+      );
       await refresh();
     } catch (err) {
       setError(err.message || 'Unsubscribe failed');
@@ -133,8 +150,9 @@ export default function NotificationSection({ busy, getToken, onNotice }) {
 
       <div className="notification-status">
         <span className={`status-pill ${snsConfigured ? 'status-pill--ok' : 'status-pill--warn'}`}>
-          {snsConfigured ? 'SNS configured' : 'SNS not configured (simulated logs)'}
+          {snsConfigured ? 'SNS configured (real AWS emails)' : 'SNS not configured (simulated logs)'}
         </span>
+        <p className="muted api-base-hint">API: {getApiBaseUrl()}</p>
       </div>
 
       {subscriptions.length ? (

@@ -52,7 +52,7 @@ export default function QueryPanel({
         </span>
         Search &amp; query
       </h2>
-      <p className="muted">Find wildlife media by species tags, counts, or similar files.</p>
+      <p className="muted">Fuzzy tag search — e.g. &quot;dingo&quot; matches &quot;canis dingo&quot;.</p>
 
       <div className="query-tabs" role="tablist" aria-label="Query modes">
         {TABS.map((tab) => (
@@ -72,7 +72,7 @@ export default function QueryPanel({
 
       {activeTab === 'tags' ? (
         <div className="query-panel-body" role="tabpanel">
-          <p className="hint">All tags must match with at least the given count (logical AND).</p>
+          <p className="hint">Fuzzy AND: each tag must match at least one stored tag with the minimum count.</p>
           {tagRows.map((row, index) => (
             <div key={row.id} className="tag-count-row">
               <input
@@ -134,7 +134,7 @@ export default function QueryPanel({
 
       {activeTab === 'lookup' ? (
         <div className="query-panel-body" role="tabpanel">
-          <h3>By species</h3>
+          <h3>By species (fuzzy)</h3>
           <input
             type="text"
             placeholder="e.g. dingo, koala, wombat"

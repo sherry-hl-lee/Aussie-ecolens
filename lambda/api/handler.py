@@ -26,6 +26,7 @@ from sns_notifications import (
     list_user_subscriptions,
     notify_for_tags_on_item,
     subscribe_tags,
+    tag_fuzzy_match,
     unsubscribe_tags,
     user_email_from_claims,
     user_sub_from_claims,
@@ -447,16 +448,23 @@ def create_presigned_upload(body: dict[str, Any], event: dict[str, Any]) -> dict
     )
 
 
+def item_has_fuzzy_species(item: dict[str, Any], species: str) -> bool:
+    return any(tag_fuzzy_match(species, str(t)) for t in item.get("tags", []))
+
+
 def query_species(body: dict[str, Any]) -> dict[str, Any]:
     species = str(body.get("species", "")).strip().lower()
     if not species:
         return respond(400, {"detail": "species is required"})
-    results = [
-        it
-        for it in scan_all_items()
-        if species in [t.lower() for t in it.get("tags", [])]
-    ]
+    results = [it for it in scan_all_items() if item_has_fuzzy_species(it, species)]
     return respond(200, {"count": len(results), "items": presign_items(results)})
+
+
+def fuzzy_tag_count_meets(counts: dict[str, int], query_tag: str, min_count: int) -> bool:
+    for tag_key, count in counts.items():
+        if tag_fuzzy_match(query_tag, tag_key) and count >= min_count:
+            return True
+    return False
 
 
 def query_tags_count(body: dict[str, Any]) -> dict[str, Any]:
@@ -466,7 +474,7 @@ def query_tags_count(body: dict[str, Any]) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     for item in scan_all_items():
         counts = {k.lower(): int(v) for k, v in item.get("tagCounts", {}).items()}
-        if all(counts.get(tag, 0) >= min_count for tag, min_count in requested.items()):
+        if all(fuzzy_tag_count_meets(counts, tag, min_count) for tag, min_count in requested.items()):
             results.append(item)
     return respond(200, {"count": len(results), "items": presign_items(results)})
 
@@ -493,11 +501,13 @@ def query_by_file(event: dict[str, Any]) -> dict[str, Any]:
 
     query_tags = query_tags_for_upload(content, _filename)
     required = {t.lower() for t in query_tags}
-    results = [
-        it
-        for it in scan_all_items()
-        if required.issubset({t.lower() for t in it.get("tags", [])})
-    ]
+    results = []
+    for it in scan_all_items():
+        item_tags = {str(t).lower() for t in it.get("tags", [])}
+        if any(
+            tag_fuzzy_match(query_tag, item_tag) for query_tag in required for item_tag in item_tags
+        ):
+            results.append(it)
     return respond(
         200,
         {
@@ -580,13 +590,14 @@ def subscribe_notification(event: dict[str, Any], body: dict[str, Any]) -> dict[
     claims = claims_from_event(event)
     user_sub = user_sub_from_claims(claims)
     email = user_email_from_claims(claims, str(body.get("email", "")))
-    subscribed = subscribe_tags(user_sub, email, tags)
+    subscribed, notifications_sent = subscribe_tags(user_sub, email, tags)
     return respond(
         200,
         {
             "subscribed": subscribed,
             "email": email,
             "snsConfigured": bool(SNS_TOPIC_ARN),
+            "notificationsSent": notifications_sent,
         },
     )
 
@@ -597,8 +608,8 @@ def unsubscribe_notification(event: dict[str, Any], body: dict[str, Any]) -> dic
         return respond(400, {"detail": "tags is required"})
     claims = claims_from_event(event)
     user_sub = user_sub_from_claims(claims)
-    unsubscribed = unsubscribe_tags(user_sub, tags)
-    return respond(200, {"unsubscribed": unsubscribed})
+    unsubscribed, notifications_sent = unsubscribe_tags(user_sub, tags)
+    return respond(200, {"unsubscribed": unsubscribed, "notificationsSent": notifications_sent})
 
 
 def delete_files(body: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:

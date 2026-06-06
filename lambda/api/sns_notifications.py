@@ -42,6 +42,18 @@ def normalize_tags(tags: list[Any]) -> list[str]:
     return sorted({str(t).strip().lower() for t in tags if str(t).strip()})
 
 
+def tag_fuzzy_match(a: str, b: str) -> bool:
+    """True when either tag contains the other (e.g. dingo ↔ canis dingo)."""
+    left, right = a.lower().strip(), b.lower().strip()
+    if not left or not right:
+        return False
+    return left in right or right in left
+
+
+def subscription_tag_matches_file_tags(sub_tag: str, file_tags: set[str]) -> bool:
+    return any(tag_fuzzy_match(sub_tag, file_tag) for file_tag in file_tags)
+
+
 def user_sub_from_claims(claims: dict[str, Any]) -> str:
     return str(claims.get("sub") or claims.get("username") or "dev-user")
 
@@ -98,7 +110,48 @@ def list_user_subscriptions(user_sub: str) -> list[dict[str, Any]]:
     return items
 
 
-def subscribe_tags(user_sub: str, email: str, tags: list[str]) -> list[str]:
+def build_subscribe_message(email: str, tag: str) -> tuple[str, str]:
+    subject = f"EcoLens: subscribed to tag '{tag}'"
+    body = (
+        f"Your EcoLens tag subscription is active.\n\n"
+        f"Tag: {tag}\n"
+        f"Notification email: {email}\n\n"
+        f"You will receive alerts when new media matches this tag.\n"
+        f"If this is your first time, also confirm the separate AWS SNS email when it arrives.\n"
+    )
+    return subject, body
+
+
+def build_unsubscribe_message(email: str, tag: str) -> tuple[str, str]:
+    subject = f"EcoLens: unsubscribed from tag '{tag}'"
+    body = (
+        f"Your EcoLens tag subscription has been removed.\n\n"
+        f"Tag: {tag}\n"
+        f"Notification email: {email}\n\n"
+        f"You will no longer receive alerts for new media matching this tag.\n"
+    )
+    return subject, body
+
+
+def notify_subscribe_confirmation(email: str, tags: list[str]) -> int:
+    sent = 0
+    for tag in normalize_tags(tags):
+        subject, body = build_subscribe_message(email, tag)
+        publish_sns_notification(email, subject, body, {tag})
+        sent += 1
+    return sent
+
+
+def notify_unsubscribe_confirmation(email: str, tags: list[str]) -> int:
+    sent = 0
+    for tag in normalize_tags(tags):
+        subject, body = build_unsubscribe_message(email, tag)
+        publish_sns_notification(email, subject, body, {tag})
+        sent += 1
+    return sent
+
+
+def subscribe_tags(user_sub: str, email: str, tags: list[str]) -> tuple[list[str], int]:
     table = subscriptions_table()
     if not table:
         raise RuntimeError("SUBSCRIPTIONS_TABLE is not configured")
@@ -118,22 +171,31 @@ def subscribe_tags(user_sub: str, email: str, tags: list[str]) -> list[str]:
         )
         subscribed.append(tag)
         register_sns_email_filter(email, tag)
-    return subscribed
+    notifications_sent = notify_subscribe_confirmation(email, subscribed) if subscribed else 0
+    return subscribed, notifications_sent
 
 
-def unsubscribe_tags(user_sub: str, tags: list[str]) -> list[str]:
+def unsubscribe_tags(user_sub: str, tags: list[str]) -> tuple[list[str], int]:
     table = subscriptions_table()
     if not table:
         raise RuntimeError("SUBSCRIPTIONS_TABLE is not configured")
 
     unsubscribed: list[str] = []
+    notifications_sent = 0
     for tag in normalize_tags(tags):
         try:
+            resp = table.get_item(Key={"userSub": user_sub, "tag": tag})
+            item = resp.get("Item")
+            if not item:
+                continue
+            email = str(item.get("email", "")).lower()
             table.delete_item(Key={"userSub": user_sub, "tag": tag})
             unsubscribed.append(tag)
+            if email:
+                notifications_sent += notify_unsubscribe_confirmation(email, [tag])
         except ClientError:
             logger.exception("Failed to unsubscribe userSub=%s tag=%s", user_sub, tag)
-    return unsubscribed
+    return unsubscribed, notifications_sent
 
 
 def matching_subscriptions(file_tags: list[str]) -> dict[str, set[str]]:
@@ -151,7 +213,7 @@ def matching_subscriptions(file_tags: list[str]) -> dict[str, set[str]]:
         resp = table.scan(**kwargs)
         for row in resp.get("Items", []):
             tag = str(row.get("tag", "")).lower()
-            if tag not in normalized:
+            if not subscription_tag_matches_file_tags(tag, normalized):
                 continue
             email = str(row.get("email", "")).lower()
             if email:
