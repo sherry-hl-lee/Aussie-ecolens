@@ -61,6 +61,17 @@ Region example: `us-east-1` (match your Cognito pool).
 
 Optional GSI: `tag-index` if you need fast tag queries at scale (MVP can scan table for prototype).
 
+### DynamoDB table `ecolens-subscriptions` (Member D — SNS)
+
+| Attribute | Type | Notes |
+|-----------|------|-------|
+| `userSub` | String (PK) | Cognito `sub` |
+| `tag` | String (SK) | Lowercase tag name |
+| `email` | String | Notification email |
+| `createdAt` | String | ISO-8601 |
+
+See `docs/aws-sns-console-deploy.md` for SNS topic + IAM + API routes.
+
 ### Lambda `ecolens-process-upload`
 
 - **Trigger:** S3 `ObjectCreated` on prefix `media/`
@@ -75,8 +86,11 @@ Optional GSI: `tag-index` if you need fast tag queries at scale (MVP can scan ta
 | `TABLE_NAME` | `ecolens-files` |
 | `MODEL_S3_URI` | `s3://ecolens-media-team1/models/model.pt` |
 | `LABELS_S3_URI` | `s3://.../labels.txt` (optional) |
+| `SNS_TOPIC_ARN` | `arn:aws:sns:...:ecolens-tag-alerts` (Member D) |
+| `SUBSCRIPTIONS_TABLE` | `ecolens-subscriptions` |
+| `SNS_NOTIFICATIONS_ENABLED` | `true` |
 
-- **IAM:** `s3:GetObject` on bucket; `s3:PutObject` on `thumbnails/*`; `dynamodb:GetItem/PutItem` on table
+- **IAM:** `s3:GetObject` on bucket; `s3:PutObject` on `thumbnails/*`; `dynamodb:GetItem/PutItem` on table; `sns:Publish`; `dynamodb:Scan` on subscriptions table
 
 ### Lambda `ecolens-api` + API Gateway
 
@@ -173,7 +187,7 @@ Dependencies mirror `backend/requirements.txt` + `onnx2torch`, `opencv-python-he
 |--------|----------------|
 | B | API Gateway ID, authorizer attachment, region |
 | C | API base URL, upload flow (presigned vs multipart) |
-| D | CloudWatch log group, SNS topic ARN (after process Lambda publishes) |
+| D | SNS topic ARN, subscriptions table, notification routes — see `docs/aws-sns-console-deploy.md` |
 
 ---
 

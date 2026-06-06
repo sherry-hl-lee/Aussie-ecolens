@@ -891,3 +891,67 @@ button.btn-primary.btn-block {
 .app-card-error {
   border-color: #fecaca;
 }
+
+.notification-card .inline-error {
+  color: var(--eco-danger);
+  font-size: 0.9rem;
+  margin: 0.5rem 0;
+}
+
+.notification-status {
+  margin: 0.75rem 0;
+}
+
+.status-pill {
+  display: inline-block;
+  padding: 0.25rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.status-pill--ok {
+  background: rgba(64, 145, 108, 0.15);
+  color: var(--eco-green);
+}
+
+.status-pill--warn {
+  background: rgba(196, 69, 54, 0.12);
+  color: var(--eco-danger);
+}
+
+.subscription-list {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.subscription-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--eco-border);
+  border-radius: var(--radius-sm);
+  background: var(--eco-cream);
+}
+
+.tag-chip {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: var(--eco-green);
+  color: var(--eco-white);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.btn-sm {
+  margin-left: auto;
+  padding: 0.25rem 0.55rem;
+  font-size: 0.8rem;
+}

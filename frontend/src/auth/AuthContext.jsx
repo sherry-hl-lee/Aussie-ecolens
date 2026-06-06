@@ -130,13 +130,20 @@ export function AuthProvider({ children }) {
     try {
       const session = await fetchAuthSession();
       const idToken = session.tokens?.idToken?.toString();
-      if (idToken) return idToken;
+      if (idToken && isValidJwt(idToken)) {
+        localStorage.setItem('token', idToken);
+        return idToken;
+      }
     } catch {
-      /* use stored token */
+      /* fall through */
     }
 
     const stored = localStorage.getItem('token');
     if (isValidJwt(stored)) return stored;
+
+    if (stored) {
+      localStorage.removeItem('token');
+    }
 
     try {
       const cfg = await getAuthConfig();

@@ -162,6 +162,29 @@ export function deleteFiles(payload, token) {
   return jsonRequest('/files/delete', { method: 'POST', payload, token });
 }
 
+/**
+ * @param {string} token
+ */
+export function listNotificationSubscriptions(token) {
+  return jsonRequest('/notifications/subscriptions', { method: 'GET', token });
+}
+
+/**
+ * @param {{ tags: string[], email?: string }} payload
+ * @param {string} token
+ */
+export function subscribeNotifications(payload, token) {
+  return jsonRequest('/notifications/subscribe', { method: 'POST', payload, token });
+}
+
+/**
+ * @param {{ tags: string[] }} payload
+ * @param {string} token
+ */
+export function unsubscribeNotifications(payload, token) {
+  return jsonRequest('/notifications/unsubscribe', { method: 'POST', payload, token });
+}
+
 /** Extract display URLs from API responses (thumbnails for images). */
 export function extractThumbnailUrls(data) {
   const urls = [];

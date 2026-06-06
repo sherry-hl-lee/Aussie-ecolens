@@ -18,6 +18,17 @@ from urllib.parse import unquote
 import boto3
 from botocore.exceptions import ClientError
 
+from sns_notifications import (
+    SNS_NOTIFICATIONS_ENABLED,
+    SNS_TOPIC_ARN,
+    list_user_subscriptions,
+    notify_for_tags_on_item,
+    subscribe_tags,
+    unsubscribe_tags,
+    user_email_from_claims,
+    user_sub_from_claims,
+)
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
@@ -63,6 +74,12 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             return query_thumbnail(body)
         if path == "/tags/bulk" and method == "POST":
             return tags_bulk(body)
+        if path == "/notifications/subscriptions" and method == "GET":
+            return list_notification_subscriptions(event)
+        if path == "/notifications/subscribe" and method == "POST":
+            return subscribe_notification(event, body)
+        if path == "/notifications/unsubscribe" and method == "POST":
+            return unsubscribe_notification(event, body)
         if path == "/files/delete" and method == "POST":
             return delete_files(body)
         return respond(404, {"detail": f"Not found: {method} {path}"})
@@ -258,6 +275,8 @@ def auth_config() -> dict[str, Any]:
             "cognitoRegion": COGNITO_REGION,
             "userPoolId": COGNITO_USER_POOL_ID,
             "appClientIdConfigured": bool(COGNITO_APP_CLIENT_ID),
+            "snsConfigured": bool(SNS_TOPIC_ARN),
+            "notificationsEnabled": SNS_NOTIFICATIONS_ENABLED,
         },
     )
 
@@ -354,6 +373,7 @@ def tags_bulk(body: dict[str, Any]) -> dict[str, Any]:
     tags = [str(t).lower() for t in body.get("tags", [])]
     operation = int(body.get("operation", 1))
     updated = 0
+    notifications_sent = 0
 
     for url in urls:
         item = find_item_by_file_url(str(url))
@@ -371,6 +391,11 @@ def tags_bulk(body: dict[str, Any]) -> dict[str, Any]:
                 item_tags.discard(tag)
                 counts.pop(tag, None)
 
+        updated_item = {
+            **item,
+            "tags": sorted(item_tags),
+            "tagCounts": counts,
+        }
         table.update_item(
             Key={"checksum": item["checksum"]},
             UpdateExpression="SET tags = :tags, tagCounts = :counts",
@@ -380,8 +405,58 @@ def tags_bulk(body: dict[str, Any]) -> dict[str, Any]:
             },
         )
         updated += 1
+        if operation == 1:
+            notifications_sent += notify_for_tags_on_item(updated_item, tags)
 
-    return respond(200, {"updated": updated})
+    return respond(200, {"updated": updated, "notificationsSent": notifications_sent})
+
+
+def claims_from_event(event: dict[str, Any]) -> dict[str, Any]:
+    authorizer = event.get("requestContext", {}).get("authorizer") or {}
+    return authorizer.get("jwt", {}).get("claims") or authorizer.get("claims") or {}
+
+
+def list_notification_subscriptions(event: dict[str, Any]) -> dict[str, Any]:
+    claims = claims_from_event(event)
+    user_sub = user_sub_from_claims(claims)
+    return respond(
+        200,
+        {
+            "userSub": user_sub,
+            "email": user_email_from_claims(claims),
+            "subscriptions": list_user_subscriptions(user_sub),
+            "snsConfigured": bool(SNS_TOPIC_ARN),
+            "notificationsEnabled": SNS_NOTIFICATIONS_ENABLED,
+        },
+    )
+
+
+def subscribe_notification(event: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+    tags = body.get("tags") or []
+    if not tags:
+        return respond(400, {"detail": "tags is required"})
+    claims = claims_from_event(event)
+    user_sub = user_sub_from_claims(claims)
+    email = user_email_from_claims(claims, str(body.get("email", "")))
+    subscribed = subscribe_tags(user_sub, email, tags)
+    return respond(
+        200,
+        {
+            "subscribed": subscribed,
+            "email": email,
+            "snsConfigured": bool(SNS_TOPIC_ARN),
+        },
+    )
+
+
+def unsubscribe_notification(event: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+    tags = body.get("tags") or []
+    if not tags:
+        return respond(400, {"detail": "tags is required"})
+    claims = claims_from_event(event)
+    user_sub = user_sub_from_claims(claims)
+    unsubscribed = unsubscribe_tags(user_sub, tags)
+    return respond(200, {"unsubscribed": unsubscribed})
 
 
 def delete_files(body: dict[str, Any]) -> dict[str, Any]:
