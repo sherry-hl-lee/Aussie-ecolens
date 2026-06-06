@@ -28,4 +28,7 @@ mg_detections.json
 # Env secrets
 .env
 .env.*
+!.env.example
 node_modules
+frontend/.vite/
+dist/

@@ -156,7 +156,6 @@ def require_auth(request: Request) -> dict[str, Any]:
             raise
         except JWTError as exc:
             raise HTTPException(status_code=401, detail=f"Invalid Cognito token: {exc}") from exc
-
     cognito_configured = bool(COGNITO_REGION and COGNITO_USER_POOL_ID)
     if cognito_configured and auth.startswith("Bearer "):
         token = auth[7:].strip()
@@ -166,6 +165,22 @@ def require_auth(request: Request) -> dict[str, Any]:
             except (JWTError, HTTPException, URLError, OSError, ValueError):
                 logger.warning("Cognito token ignored in dev mode; using dev-user fallback")
     return {"sub": "dev-user", "email": "dev-user@dev.local", "mode": "dev"}
+
+
+def owner_email(claims: dict[str, Any]) -> str:
+    raw = claims.get("email") or claims.get("cognito:username") or claims.get("sub") or ""
+    return str(raw).strip().lower()
+
+
+def assert_owner(claims: dict[str, Any], item: dict[str, Any]) -> None:
+    current = owner_email(claims)
+    item_owner = str(item.get("uploadedBy") or "").strip().lower()
+    if not item_owner:
+        if AUTH_REQUIRED and current:
+            raise HTTPException(status_code=403, detail="This file has no owner recorded")
+        return
+    if AUTH_REQUIRED and (not current or current != item_owner):
+        raise HTTPException(status_code=403, detail="You can only modify or delete your own uploads")
 
 
 def init_db() -> None:
@@ -193,6 +208,8 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE files ADD COLUMN detection_source TEXT NOT NULL DEFAULT 'fallback:checksum'"
             )
+        if "uploaded_by" not in existing_cols:
+            conn.execute("ALTER TABLE files ADD COLUMN uploaded_by TEXT NOT NULL DEFAULT ''")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS tag_subscriptions (
@@ -321,6 +338,7 @@ def parse_json(value: str) -> Any:
 
 
 def row_to_item(row: sqlite3.Row) -> dict[str, Any]:
+    keys = row.keys()
     return {
         "checksum": row["checksum"],
         "filename": row["filename"],
@@ -331,6 +349,7 @@ def row_to_item(row: sqlite3.Row) -> dict[str, Any]:
         "tagCounts": parse_json(row["tag_counts_json"]),
         "detectionSource": row["detection_source"],
         "createdAt": row["created_at"],
+        "uploadedBy": row["uploaded_by"] if "uploaded_by" in keys else "",
     }
 
 
@@ -544,14 +563,37 @@ def auth_me(claims: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
 def list_files(
     limit: int = Query(20, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    user: str | None = Query(None),
     claims: dict[str, Any] = Depends(require_auth),
 ) -> dict[str, Any]:
+    current = owner_email(claims)
+    target = ""
+    if user:
+        if user.lower() in ("me", "current", "current_user_email"):
+            target = current
+        else:
+            target = user.strip().lower()
+        if AUTH_REQUIRED and current and target != current:
+            raise HTTPException(status_code=403, detail="Cannot list another user's files")
+        if not target:
+            raise HTTPException(status_code=401, detail="Sign in required for My Uploads")
+
     with db() as conn:
-        total = conn.execute("SELECT COUNT(*) AS c FROM files").fetchone()["c"]
-        rows = conn.execute(
-            "SELECT * FROM files ORDER BY id DESC LIMIT ? OFFSET ?",
-            (limit, offset),
-        ).fetchall()
+        if target:
+            total = conn.execute(
+                "SELECT COUNT(*) AS c FROM files WHERE lower(uploaded_by) = ?",
+                (target,),
+            ).fetchone()["c"]
+            rows = conn.execute(
+                "SELECT * FROM files WHERE lower(uploaded_by) = ? ORDER BY id DESC LIMIT ? OFFSET ?",
+                (target, limit, offset),
+            ).fetchall()
+        else:
+            total = conn.execute("SELECT COUNT(*) AS c FROM files").fetchone()["c"]
+            rows = conn.execute(
+                "SELECT * FROM files ORDER BY id DESC LIMIT ? OFFSET ?",
+                (limit, offset),
+            ).fetchall()
     return {
         "total": int(total),
         "limit": limit,
@@ -643,11 +685,12 @@ async def upload(file: UploadFile = File(...), claims: dict[str, Any] = Depends(
             except Exception:
                 logger.exception("Video thumbnail generation failed for %s", safe_name)
 
+        uploader = owner_email(claims)
         conn.execute(
             """
             INSERT INTO files
-              (checksum, filename, media_type, file_url, thumbnail_url, tags_json, tag_counts_json, detection_source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+              (checksum, filename, media_type, file_url, thumbnail_url, tags_json, tag_counts_json, detection_source, uploaded_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 digest,
@@ -658,6 +701,7 @@ async def upload(file: UploadFile = File(...), claims: dict[str, Any] = Depends(
                 json.dumps(tags),
                 json.dumps(tag_counts),
                 detection_source,
+                uploader,
             ),
         )
         item_row = conn.execute(
@@ -772,6 +816,7 @@ def tags_bulk(payload: dict[str, Any], claims: dict[str, Any] = Depends(require_
             row = conn.execute("SELECT * FROM files WHERE file_url = ?", (url,)).fetchone()
             if not row:
                 continue
+            assert_owner(claims, row_to_item(row))
             item_tags = set(parse_json(row["tags_json"]))
             counts = parse_json(row["tag_counts_json"])
             if operation == 1:
@@ -802,6 +847,7 @@ def delete_files(payload: dict[str, Any], claims: dict[str, Any] = Depends(requi
             row = conn.execute("SELECT * FROM files WHERE file_url = ?", (url,)).fetchone()
             if not row:
                 continue
+            assert_owner(claims, row_to_item(row))
             try:
                 (UPLOADS_DIR / row["filename"]).unlink(missing_ok=True)
             except OSError:

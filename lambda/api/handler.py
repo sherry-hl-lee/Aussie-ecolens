@@ -65,7 +65,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         if path == "/files" and method == "GET":
             return list_files(event)
         if path == "/upload" and method == "POST":
-            return create_presigned_upload(body)
+            return create_presigned_upload(body, event)
         if path == "/query/species" and method == "POST":
             return query_species(body)
         if path == "/query/tags-count" and method == "POST":
@@ -73,7 +73,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         if path == "/query/thumbnail" and method == "POST":
             return query_thumbnail(body)
         if path == "/tags/bulk" and method == "POST":
-            return tags_bulk(body)
+            return tags_bulk(body, event)
         if path == "/notifications/subscriptions" and method == "GET":
             return list_notification_subscriptions(event)
         if path == "/notifications/subscribe" and method == "POST":
@@ -81,8 +81,10 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         if path == "/notifications/unsubscribe" and method == "POST":
             return unsubscribe_notification(event, body)
         if path == "/files/delete" and method == "POST":
-            return delete_files(body)
+            return delete_files(body, event)
         return respond(404, {"detail": f"Not found: {method} {path}"})
+    except PermissionError as exc:
+        return respond(403, {"detail": str(exc)})
     except ClientError as exc:
         logger.exception("AWS API error")
         return respond(500, {"detail": exc.response.get("Error", {}).get("Message", str(exc))})
@@ -164,7 +166,33 @@ def dynamo_to_item(row: dict[str, Any]) -> dict[str, Any]:
         "tagCounts": tag_counts,
         "detectionSource": row.get("detectionSource", ""),
         "createdAt": row.get("createdAt", ""),
+        "uploadedBy": row.get("uploadedBy", ""),
     }
+
+
+def get_claims(event: dict[str, Any]) -> dict[str, Any]:
+    authorizer = event.get("requestContext", {}).get("authorizer") or {}
+    return authorizer.get("jwt", {}).get("claims") or authorizer.get("claims") or {}
+
+
+def owner_email(claims: dict[str, Any]) -> str:
+    raw = claims.get("email") or claims.get("cognito:username") or claims.get("sub") or ""
+    return str(raw).strip().lower()
+
+
+def assert_owner(event: dict[str, Any], item: dict[str, Any]) -> None:
+    """Raise PermissionError when the caller is not the uploader."""
+    if not item:
+        raise PermissionError("File not found")
+    current = owner_email(get_claims(event))
+    item_owner = str(item.get("uploadedBy") or "").strip().lower()
+    auth_enabled = bool(COGNITO_REGION and COGNITO_USER_POOL_ID)
+    if not item_owner:
+        if auth_enabled and current:
+            raise PermissionError("This file has no owner recorded")
+        return
+    if auth_enabled and (not current or current != item_owner):
+        raise PermissionError("You can only modify or delete your own uploads")
 
 
 def scan_all_items() -> list[dict[str, Any]]:
@@ -306,19 +334,46 @@ def list_files(event: dict[str, Any]) -> dict[str, Any]:
         return respond(400, {"detail": "limit and offset must be integers"})
 
     all_items = scan_all_items()
+    user_param = params.get("user", "").strip()
+    if user_param:
+        claims = get_claims(event)
+        current = owner_email(claims)
+        if user_param.lower() in ("me", "current", "current_user_email"):
+            target = current
+        else:
+            target = user_param.strip().lower()
+        auth_enabled = bool(COGNITO_REGION and COGNITO_USER_POOL_ID)
+        if auth_enabled and current and target != current:
+            return respond(403, {"detail": "Cannot list another user's files"})
+        if not target:
+            return respond(401, {"detail": "Sign in required for My Uploads"})
+        all_items = [
+            it for it in all_items if str(it.get("uploadedBy") or "").lower() == target
+        ]
+
     total = len(all_items)
     page = presign_items(all_items[offset : offset + limit])
     return respond(200, {"total": total, "limit": limit, "offset": offset, "items": page})
 
 
-def create_presigned_upload(body: dict[str, Any]) -> dict[str, Any]:
+def create_presigned_upload(body: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
     require_table()
     filename = safe_filename(str(body.get("filename", "upload.bin")))
     content_type = str(body.get("contentType", "application/octet-stream")).strip() or "application/octet-stream"
     key = f"{MEDIA_PREFIX}{filename}"
+    uploaded_by = owner_email(get_claims(event))
+    put_params: dict[str, Any] = {
+        "Bucket": MEDIA_BUCKET,
+        "Key": key,
+        "ContentType": content_type,
+    }
+    headers: dict[str, str] = {"Content-Type": content_type}
+    if uploaded_by:
+        put_params["Metadata"] = {"uploaded-by": uploaded_by}
+        headers["x-amz-meta-uploaded-by"] = uploaded_by
     upload_url = s3.generate_presigned_url(
         "put_object",
-        Params={"Bucket": MEDIA_BUCKET, "Key": key, "ContentType": content_type},
+        Params=put_params,
         ExpiresIn=PRESIGNED_EXPIRY,
     )
     return respond(
@@ -326,7 +381,7 @@ def create_presigned_upload(body: dict[str, Any]) -> dict[str, Any]:
         {
             "uploadUrl": upload_url,
             "objectKey": key,
-            "headers": {"Content-Type": content_type},
+            "headers": headers,
             "note": "After PUT, wait for process Lambda then GET /files",
         },
     )
@@ -367,7 +422,7 @@ def query_thumbnail(body: dict[str, Any]) -> dict[str, Any]:
     return respond(200, {"fileUrl": signed["fileUrl"], "item": signed})
 
 
-def tags_bulk(body: dict[str, Any]) -> dict[str, Any]:
+def tags_bulk(body: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
     require_table()
     urls = body.get("urls") or []
     tags = [str(t).lower() for t in body.get("tags", [])]
@@ -379,6 +434,7 @@ def tags_bulk(body: dict[str, Any]) -> dict[str, Any]:
         item = find_item_by_file_url(str(url))
         if not item:
             continue
+        assert_owner(event, item)
         item_tags = set(t.lower() for t in item.get("tags", []))
         counts = {k.lower(): int(v) for k, v in item.get("tagCounts", {}).items()}
 
@@ -459,7 +515,7 @@ def unsubscribe_notification(event: dict[str, Any], body: dict[str, Any]) -> dic
     return respond(200, {"unsubscribed": unsubscribed})
 
 
-def delete_files(body: dict[str, Any]) -> dict[str, Any]:
+def delete_files(body: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
     require_table()
     urls = body.get("urls") or []
     deleted = 0
@@ -468,6 +524,7 @@ def delete_files(body: dict[str, Any]) -> dict[str, Any]:
         item = find_item_by_file_url(str(url))
         if not item:
             continue
+        assert_owner(event, item)
 
         for link in (item.get("fileUrl"), item.get("thumbnailUrl")):
             if not link:

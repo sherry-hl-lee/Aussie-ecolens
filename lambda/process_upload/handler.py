@@ -105,6 +105,8 @@ def process_object(bucket: str, key: str) -> dict[str, Any]:
             if thumb_key:
                 thumbnail_url = object_public_url(bucket, thumb_key)
 
+        uploaded_by = read_uploaded_by_metadata(bucket, key)
+
         item = {
             "checksum": checksum,
             "filename": filename,
@@ -115,6 +117,7 @@ def process_object(bucket: str, key: str) -> dict[str, Any]:
             "tagCounts": tag_counts,
             "detectionSource": detection_source,
             "createdAt": datetime.now(timezone.utc).isoformat(),
+            "uploadedBy": uploaded_by,
         }
         put_item(item)
         notifications_sent = notify_for_media_item(item)
@@ -153,7 +156,7 @@ def notify_gcp_tagged(item: dict[str, Any], object_key: str) -> dict[str, Any] |
         "thumbnailUrl": item.get("thumbnailUrl") or "",
         "tags": item["tags"],
         "tagCounts": item["tagCounts"],
-        "userSub": "",
+        "userSub": item.get("uploadedBy", ""),
         "source": "aws-lambda",
     }
     data = json.dumps(payload).encode("utf-8")
@@ -179,21 +182,32 @@ def notify_gcp_tagged(item: dict[str, Any], object_key: str) -> dict[str, Any] |
     return None
 
 
+def read_uploaded_by_metadata(bucket: str, key: str) -> str:
+    try:
+        resp = s3.head_object(Bucket=bucket, Key=key)
+        meta = resp.get("Metadata") or {}
+        return str(meta.get("uploaded-by") or meta.get("uploaded_by") or "").strip().lower()
+    except ClientError:
+        logger.exception("head_object failed for s3://%s/%s", bucket, key)
+        return ""
+
+
 def put_item(item: dict[str, Any]) -> None:
     # DynamoDB requires Decimal for numbers in tagCounts — convert in production.
-    table.put_item(
-        Item={
-            "checksum": item["checksum"],
-            "filename": item["filename"],
-            "mediaType": item["mediaType"],
-            "fileUrl": item["fileUrl"],
-            "thumbnailUrl": item["thumbnailUrl"],
-            "tags": item["tags"],
-            "tagCounts": item["tagCounts"],
-            "detectionSource": item["detectionSource"],
-            "createdAt": item["createdAt"],
-        }
-    )
+    row: dict[str, Any] = {
+        "checksum": item["checksum"],
+        "filename": item["filename"],
+        "mediaType": item["mediaType"],
+        "fileUrl": item["fileUrl"],
+        "thumbnailUrl": item["thumbnailUrl"],
+        "tags": item["tags"],
+        "tagCounts": item["tagCounts"],
+        "detectionSource": item["detectionSource"],
+        "createdAt": item["createdAt"],
+    }
+    if item.get("uploadedBy"):
+        row["uploadedBy"] = item["uploadedBy"]
+    table.put_item(Item=row)
 
 
 def run_detection(
