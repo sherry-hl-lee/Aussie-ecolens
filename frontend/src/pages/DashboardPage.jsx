@@ -19,6 +19,7 @@ import ConfirmModal from '../components/ConfirmModal.jsx';
 import ImageModal from '../components/ImageModal.jsx';
 import MediaGallery from '../components/MediaGallery.jsx';
 import QueryPanel from '../components/QueryPanel.jsx';
+import QueryResultsSection from '../components/QueryResultsSection.jsx';
 import NotificationSection from '../components/NotificationSection.jsx';
 import TagManageSection from '../components/TagManageSection.jsx';
 import UploadSection from '../components/UploadSection.jsx';
@@ -35,11 +36,11 @@ export default function DashboardPage() {
   const [mineTotal, setMineTotal] = useState(null);
   const [browseMode, setBrowseMode] = useState('explore');
   const [selectedUrls, setSelectedUrls] = useState(() => new Set());
-  const [lastResponse, setLastResponse] = useState(null);
   const [modal, setModal] = useState(null);
   const [deleteConfirmCount, setDeleteConfirmCount] = useState(null);
   const [listLoading, setListLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [queryResults, setQueryResults] = useState(null);
 
   const galleryItems = browseMode === 'mine' ? mineItems : exploreItems;
   const galleryTotal = browseMode === 'mine' ? mineTotal : exploreTotal;
@@ -50,6 +51,19 @@ export default function DashboardPage() {
     if (owned.length) return owned;
     // Legacy rows from GET /files?user=me without uploadedBy metadata
     return items;
+  }
+
+  /** Strict filter for search "Run my upload" — never include other users' media. */
+  function filterQueryToMyUploads(items, mineList = mineItems) {
+    if (!user?.uploadedBy) return [];
+    const mineUrls = new Set((mineList || []).map((i) => i.fileUrl).filter(Boolean));
+    const mineChecksums = new Set((mineList || []).map((i) => i.checksum).filter(Boolean));
+    return items.filter((item) => {
+      if (isItemOwnedByUser(item, user)) return true;
+      if (item.fileUrl && mineUrls.has(item.fileUrl)) return true;
+      if (item.checksum && mineChecksums.has(item.checksum)) return true;
+      return false;
+    });
   }
 
   async function fetchMineItems(token) {
@@ -77,7 +91,6 @@ export default function DashboardPage() {
         const { data, items } = await fetchMineItems(token);
         setMineItems(items);
         setMineTotal(items.length);
-        setLastResponse(data);
         return;
       }
 
@@ -85,7 +98,6 @@ export default function DashboardPage() {
       const normalized = normalizeMediaItems(data);
       setExploreItems(normalized);
       setExploreTotal(typeof data.total === 'number' ? data.total : normalized.length);
-      setLastResponse(data);
     } catch (err) {
       setError(formatError(err));
     } finally {
@@ -98,17 +110,23 @@ export default function DashboardPage() {
   }, [refreshList]);
 
   function itemByUrl(fileUrl) {
-    return galleryItems.find((it) => it.fileUrl === fileUrl);
+    const fromGallery = galleryItems.find((it) => it.fileUrl === fileUrl);
+    if (fromGallery) return fromGallery;
+    return queryResults?.items?.find((it) => it.fileUrl === fileUrl);
   }
 
-  function canSelectItem(item) {
-    if (browseMode === 'mine') return true;
+  function canSelectItem(item, { inQueryResults = false } = {}) {
+    if (browseMode === 'mine' && !inQueryResults) return true;
     return isItemOwnedByUser(item, user);
   }
 
   function toggleSelect(fileUrl) {
     const item = itemByUrl(fileUrl);
-    if (item && !canSelectItem(item)) return;
+    if (!item) return;
+    const inQueryResults = Boolean(
+      queryResults?.items?.some((it) => it.fileUrl === fileUrl),
+    );
+    if (!canSelectItem(item, { inQueryResults })) return;
     setSelectedUrls((prev) => {
       const next = new Set(prev);
       if (next.has(fileUrl)) next.delete(fileUrl);
@@ -118,11 +136,24 @@ export default function DashboardPage() {
   }
 
   function selectAllOwned() {
-    const owned = galleryItems
-      .filter((it) => canSelectItem(it))
-      .map((it) => it.fileUrl)
-      .filter(Boolean);
+    const queryUrls = new Set(
+      (queryResults?.items || []).map((it) => it.fileUrl).filter(Boolean),
+    );
+    const pool = [...galleryItems, ...(queryResults?.items || [])];
+    const seen = new Set();
+    const owned = pool
+      .filter((it) => {
+        if (!it?.fileUrl || seen.has(it.fileUrl)) return false;
+        seen.add(it.fileUrl);
+        return canSelectItem(it, { inQueryResults: queryUrls.has(it.fileUrl) });
+      })
+      .map((it) => it.fileUrl);
     setSelectedUrls(new Set(owned));
+  }
+
+  function clearQueryResults() {
+    setQueryResults(null);
+    clearSelection();
   }
 
   function clearSelection() {
@@ -130,9 +161,13 @@ export default function DashboardPage() {
   }
 
   function ownedSelectedUrls() {
+    const queryUrls = new Set(
+      (queryResults?.items || []).map((it) => it.fileUrl).filter(Boolean),
+    );
     return [...selectedUrls].filter((url) => {
       const item = itemByUrl(url);
-      return item && canSelectItem(item);
+      if (!item) return false;
+      return canSelectItem(item, { inQueryResults: queryUrls.has(url) });
     });
   }
 
@@ -145,7 +180,6 @@ export default function DashboardPage() {
         throw new Error('No authentication token. Please sign in again.');
       }
       const data = await uploadFile(file, token);
-      setLastResponse(data);
       if (data.deduplicated) {
         setWarning('This file already exists in the system. Duplicate upload blocked.');
       } else if (data.item) {
@@ -169,40 +203,61 @@ export default function DashboardPage() {
     }
   }
 
-  async function applyQueryResult(data) {
+  async function applyQueryResult(data, label, { mineOnly = false } = {}) {
     if (!data) return;
-    const normalized = normalizeMediaItems(data);
-    setLastResponse(data);
-    const count = data.count ?? data.total ?? normalized.length;
-
-    setExploreItems(normalized);
-    setExploreTotal(count);
-
-    if (browseMode === 'mine') {
-      setNotice(`Found ${count} file(s). My Uploads is unchanged — switch to Explore to view results.`);
-      return;
+    let normalized = normalizeMediaItems(data);
+    if (mineOnly) {
+      let mineList = mineItems;
+      try {
+        const token = await getToken();
+        if (token) {
+          const fetched = await fetchMineItems(token);
+          mineList = fetched.items;
+          setMineItems(mineList);
+          setMineTotal(mineList.length);
+        }
+      } catch {
+        /* use cached mineItems */
+      }
+      normalized = filterQueryToMyUploads(normalized, mineList);
     }
-
-    setNotice(`Found ${count} file(s).`);
+    const count = mineOnly
+      ? normalized.length
+      : (data.count ?? data.total ?? normalized.length);
+    const scopeLabel = mineOnly ? `${label} (my upload)` : `${label} (explore)`;
+    setQueryResults({
+      items: normalized,
+      total: count,
+      label: scopeLabel,
+      response: mineOnly ? { ...data, count, items: normalized } : data,
+    });
+    setNotice(
+      mineOnly
+        ? `Found ${count} of your upload(s) in Search results.`
+        : `Found ${count} file(s) in Search results.`,
+    );
     clearSelection();
   }
 
-  async function handleQueryTagCount(payload) {
+  async function handleQueryTagCount(payload, { mineOnly = false } = {}) {
     if (!payload || typeof payload !== 'object' || !Object.keys(payload).length) {
       setError('Add at least one tag with a minimum count.');
       return;
     }
+    const tagSummary = Object.entries(payload)
+      .map(([tag, count]) => `${tag}≥${count}`)
+      .join(', ');
     const data = await run((token) => queryTagsCount(payload, token));
-    await applyQueryResult(data);
+    await applyQueryResult(data, `Tag counts (${tagSummary})`, { mineOnly });
   }
 
-  async function handleQuerySpecies(species) {
+  async function handleQuerySpecies(species, { mineOnly = false } = {}) {
     if (!species) {
       setError('Species name is required.');
       return;
     }
     const data = await run((token) => querySpecies(species, token));
-    await applyQueryResult(data);
+    await applyQueryResult(data, `Species: ${species}`, { mineOnly });
   }
 
   async function handleQueryThumbnail(url) {
@@ -218,13 +273,16 @@ export default function DashboardPage() {
         fileUrl: data.fileUrl,
       });
       setNotice('Resolved thumbnail to full image URL.');
-      setLastResponse(data);
     }
   }
 
-  async function handleQueryByFile(file) {
+  async function handleQueryByFile(file, { mineOnly = false } = {}) {
     const data = await run((token) => queryByFile(file, token));
-    await applyQueryResult(data);
+    const queryTags = Array.isArray(data?.queryTags) ? data.queryTags.join(', ') : '';
+    const base = queryTags
+      ? `Find by file (tags: ${queryTags})`
+      : `Find by file: ${file.name || 'upload'}`;
+    await applyQueryResult(data, base, { mineOnly });
   }
 
   async function handleOpenItem(item) {
@@ -278,7 +336,6 @@ export default function DashboardPage() {
       successMessage: `Tags updated on ${urls.length} file(s).`,
     });
     if (data) {
-      setLastResponse(data);
       await refreshList();
     }
   }
@@ -304,7 +361,6 @@ export default function DashboardPage() {
       successMessage: `Deleted ${urls.length} file(s).`,
     });
     if (data) {
-      setLastResponse(data);
       clearSelection();
       await refreshList();
     }
@@ -319,6 +375,7 @@ export default function DashboardPage() {
   const selectedOwnedCount = ownedSelectedUrls().length;
   const welcomeName = user?.displayName || user?.email || 'Explorer';
   const displayedTotal = galleryTotal ?? galleryItems.length;
+  const queryResultCount = queryResults?.total ?? queryResults?.items?.length ?? 0;
 
   return (
     <div className="app-shell">
@@ -360,37 +417,61 @@ export default function DashboardPage() {
             <span>Selected</span>
           </div>
           <div className="stat-chip">
+            <strong>{queryResults ? queryResultCount : '—'}</strong>
+            <span>Search results</span>
+          </div>
+          <div className="stat-chip">
             <strong>{busy ? '…' : 'Ready'}</strong>
             <span>Status</span>
           </div>
         </div>
 
-        <div className="dashboard-grid">
-          <div className="dashboard-col">
-            <UploadSection busy={uploading} onUpload={handleUpload} />
-            <NotificationSection
-              busy={busy}
-              getToken={getToken}
-              onNotice={(message) => setNotice(message)}
-            />
+        <div className="dashboard-stack">
+          <div className="dashboard-grid">
+            <div className="dashboard-col">
+              <UploadSection busy={uploading} onUpload={handleUpload} />
+            </div>
+            <div className="dashboard-col">
+              <QueryPanel
+                busy={busy}
+                onQueryTagCount={handleQueryTagCount}
+                onQuerySpecies={handleQuerySpecies}
+                onQueryThumbnail={handleQueryThumbnail}
+                onQueryByFile={handleQueryByFile}
+                onClearSearch={clearQueryResults}
+              />
+            </div>
           </div>
-          <div className="dashboard-col">
-            <QueryPanel
-              busy={busy}
-              onQueryTagCount={handleQueryTagCount}
-              onQuerySpecies={handleQuerySpecies}
-              onQueryThumbnail={handleQueryThumbnail}
-              onQueryByFile={handleQueryByFile}
-            />
-            <TagManageSection
-              busy={busy}
-              selectedCount={selectedOwnedCount}
-              visible={selectedOwnedCount > 0}
-              onBulkTags={handleBulkTags}
-              onDeleteSelected={handleDeleteSelected}
-              onSelectAll={selectAllOwned}
-              onClearSelection={clearSelection}
-            />
+
+          <QueryResultsSection
+            busy={busy}
+            queryResults={queryResults}
+            selectedUrls={selectedUrls}
+            onClear={clearQueryResults}
+            onToggleSelect={toggleSelect}
+            onOpenItem={handleOpenItem}
+            canSelectResultItem={(item) => canSelectItem(item, { inQueryResults: true })}
+          />
+
+          <div className="dashboard-grid">
+            <div className="dashboard-col">
+              <NotificationSection
+                busy={busy}
+                getToken={getToken}
+                onNotice={(message) => setNotice(message)}
+              />
+            </div>
+            <div className="dashboard-col">
+              <TagManageSection
+                busy={busy}
+                selectedCount={selectedOwnedCount}
+                visible={selectedOwnedCount > 0}
+                onBulkTags={handleBulkTags}
+                onDeleteSelected={handleDeleteSelected}
+                onSelectAll={selectAllOwned}
+                onClearSelection={clearSelection}
+              />
+            </div>
           </div>
         </div>
 
@@ -402,7 +483,7 @@ export default function DashboardPage() {
               </span>
               Gallery ({listLoading ? '…' : displayedTotal})
             </h2>
-            {busy || listLoading ? <span className="loading-pill">Working…</span> : null}
+            {listLoading ? <span className="loading-pill">Loading…</span> : null}
           </div>
 
           <div className="browse-tabs" role="tablist" aria-label="Gallery scope">
@@ -430,8 +511,8 @@ export default function DashboardPage() {
 
           <p className="muted">
             {browseMode === 'explore'
-              ? 'All platform observations. Search results appear here. Hover a thumbnail and click to view full size.'
-              : 'Only media you uploaded. Search does not change this list — use Explore for platform-wide results.'}
+              ? 'All platform observations — unchanged by search. Hover a thumbnail and click to view full size.'
+              : 'Only media you uploaded. Search matches appear in Search results.'}
           </p>
           <MediaGallery
             items={galleryItems}
@@ -439,12 +520,8 @@ export default function DashboardPage() {
             onToggleSelect={toggleSelect}
             onOpenItem={handleOpenItem}
             loading={listLoading}
-            canSelectItem={canSelectItem}
+            canSelectItem={(item) => canSelectItem(item, { inQueryResults: false })}
           />
-          <details className="raw-json">
-            <summary>Raw API response</summary>
-            <pre>{JSON.stringify(lastResponse, null, 2)}</pre>
-          </details>
         </section>
       </main>
 

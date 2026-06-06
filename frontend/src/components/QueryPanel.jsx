@@ -6,8 +6,23 @@ const TABS = [
   { id: 'lookup', label: 'Thumbnail / species' },
 ];
 
+const DEFAULT_TAG_ROWS = [{ id: '1', tag: 'koala', count: 2 }];
+
 function emptyTagRow() {
   return { id: crypto.randomUUID(), tag: '', count: 1 };
+}
+
+function QueryRunButtons({ busy, onRunExplore, onRunMyUpload }) {
+  return (
+    <div className="row-actions query-run-actions">
+      <button type="button" className="btn-primary" disabled={busy} onClick={onRunExplore}>
+        Run explore
+      </button>
+      <button type="button" className="btn-secondary" disabled={busy} onClick={onRunMyUpload}>
+        Run my upload
+      </button>
+    </div>
+  );
 }
 
 export default function QueryPanel({
@@ -16,11 +31,13 @@ export default function QueryPanel({
   onQuerySpecies,
   onQueryThumbnail,
   onQueryByFile,
+  onClearSearch,
 }) {
   const [activeTab, setActiveTab] = useState('tags');
-  const [tagRows, setTagRows] = useState([{ id: '1', tag: 'koala', count: 2 }]);
+  const [tagRows, setTagRows] = useState(DEFAULT_TAG_ROWS);
   const [species, setSpecies] = useState('');
   const [thumbnailUrl, setThumbnailUrl] = useState('');
+  const [pendingFile, setPendingFile] = useState(null);
 
   function updateTagRow(id, field, value) {
     setTagRows((rows) => rows.map((row) => (row.id === id ? { ...row, [field]: value } : row)));
@@ -34,25 +51,52 @@ export default function QueryPanel({
     setTagRows((rows) => (rows.length <= 1 ? rows : rows.filter((row) => row.id !== id)));
   }
 
-  function runTagCountQuery() {
+  function buildTagPayload() {
     const payload = {};
     for (const row of tagRows) {
       const tag = row.tag.trim().toLowerCase();
       if (!tag) continue;
       payload[tag] = Math.max(1, Number(row.count) || 1);
     }
-    onQueryTagCount(payload);
+    return payload;
+  }
+
+  function runTagCount(mineOnly) {
+    const payload = buildTagPayload();
+    onQueryTagCount(payload, { mineOnly });
+  }
+
+  function handleClearSearch() {
+    setTagRows(DEFAULT_TAG_ROWS.map((row) => ({ ...row, id: crypto.randomUUID() })));
+    setSpecies('');
+    setThumbnailUrl('');
+    setPendingFile(null);
+    onClearSearch?.();
   }
 
   return (
-    <section className="app-card">
-      <h2>
-        <span className="card-icon" aria-hidden="true">
-          🔎
-        </span>
-        Search &amp; query
-      </h2>
-      <p className="muted">Fuzzy tag search — e.g. &quot;dingo&quot; matches &quot;canis dingo&quot;.</p>
+    <section className="app-card query-panel-card">
+      <div className="query-panel-header">
+        <div>
+          <h2>
+            <span className="card-icon" aria-hidden="true">
+              🔎
+            </span>
+            Search &amp; query
+          </h2>
+          <p className="muted query-panel-lead">
+            Fuzzy tag search — e.g. &quot;dingo&quot; matches &quot;canis dingo&quot;.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="btn-ghost query-clear-btn"
+          disabled={busy}
+          onClick={handleClearSearch}
+        >
+          Clear search
+        </button>
+      </div>
 
       <div className="query-tabs" role="tablist" aria-label="Query modes">
         {TABS.map((tab) => (
@@ -106,10 +150,12 @@ export default function QueryPanel({
             <button type="button" className="btn-secondary" disabled={busy} onClick={addTagRow}>
               + Add tag
             </button>
-            <button type="button" className="btn-primary" disabled={busy} onClick={runTagCountQuery}>
-              Run query
-            </button>
           </div>
+          <QueryRunButtons
+            busy={busy}
+            onRunExplore={() => runTagCount(false)}
+            onRunMyUpload={() => runTagCount(true)}
+          />
         </div>
       ) : null}
 
@@ -122,13 +168,22 @@ export default function QueryPanel({
               accept="image/*,video/*"
               disabled={busy}
               onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) onQueryByFile(file);
+                setPendingFile(e.target.files?.[0] || null);
                 e.target.value = '';
               }}
             />
             Choose file to match tags
           </label>
+          {pendingFile ? (
+            <p className="hint query-pending-file">
+              Selected: <strong>{pendingFile.name}</strong>
+            </p>
+          ) : null}
+          <QueryRunButtons
+            busy={busy || !pendingFile}
+            onRunExplore={() => pendingFile && onQueryByFile(pendingFile, { mineOnly: false })}
+            onRunMyUpload={() => pendingFile && onQueryByFile(pendingFile, { mineOnly: true })}
+          />
         </div>
       ) : null}
 
@@ -142,14 +197,11 @@ export default function QueryPanel({
             disabled={busy}
             onChange={(e) => setSpecies(e.target.value)}
           />
-          <button
-            type="button"
-            className="btn-primary btn-block"
-            disabled={busy}
-            onClick={() => onQuerySpecies(species.trim())}
-          >
-            Search species
-          </button>
+          <QueryRunButtons
+            busy={busy || !species.trim()}
+            onRunExplore={() => onQuerySpecies(species.trim(), { mineOnly: false })}
+            onRunMyUpload={() => onQuerySpecies(species.trim(), { mineOnly: true })}
+          />
 
           <h3 style={{ marginTop: '1rem' }}>Thumbnail → full image</h3>
           <input
