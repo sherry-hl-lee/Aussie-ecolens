@@ -12,15 +12,14 @@ Main services:
 - AWS S3: original files and thumbnails
 - AWS DynamoDB: media metadata, tags, checksums
 - AWS SNS: tag-based email notifications
-- GCP Cloud Run: ML inference service
-- GCP Cloud Storage: ML model storage
+- GCP Cloud Run: tag-based notification service (second cloud)
 
 ## Repository Structure
 
 ```text
 frontend/             Web UI
 aws-backend/          AWS Lambda functions and API logic
-gcp-ml-service/       GCP Cloud Run ML inference service
+gcp-notify-service/   GCP Cloud Run tag notifications (Member B)
 infrastructure/       AWS/GCP setup scripts
 docs/                 Architecture, API design, user guide, demo script
 test/                 Testing files and Postman collections
