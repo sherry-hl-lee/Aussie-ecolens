@@ -26,6 +26,7 @@ from sns_notifications import (
     list_user_subscriptions,
     notify_for_tags_on_item,
     subscribe_tags,
+    sync_sns_email_filter_for_email,
     tag_fuzzy_match,
     unsubscribe_tags,
     user_email_from_claims,
@@ -595,11 +596,13 @@ def claims_from_event(event: dict[str, Any]) -> dict[str, Any]:
 def list_notification_subscriptions(event: dict[str, Any]) -> dict[str, Any]:
     claims = claims_from_event(event)
     user_sub = user_sub_from_claims(claims)
+    email = user_email_from_claims(claims)
+    sync_sns_email_filter_for_email(email)
     return respond(
         200,
         {
             "userSub": user_sub,
-            "email": user_email_from_claims(claims),
+            "email": email,
             "subscriptions": list_user_subscriptions(user_sub),
             "snsConfigured": bool(SNS_TOPIC_ARN),
             "notificationsEnabled": SNS_NOTIFICATIONS_ENABLED,

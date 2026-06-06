@@ -69,19 +69,104 @@ def user_email_from_claims(claims: dict[str, Any], override: str = "") -> str:
     return f"{user_sub_from_claims(claims)}@dev.local"
 
 
-def register_sns_email_filter(email: str, tag: str) -> None:
-    if not SNS_TOPIC_ARN or not SNS_NOTIFICATIONS_ENABLED:
+def tags_for_email(email: str) -> list[str]:
+    """All subscribed tags for an email address (across users)."""
+    table = subscriptions_table()
+    if not table:
+        return []
+    normalized_email = email.lower().strip()
+    tags: set[str] = set()
+    kwargs: dict[str, Any] = {}
+    while True:
+        resp = table.scan(**kwargs)
+        for row in resp.get("Items", []):
+            if str(row.get("email", "")).lower() == normalized_email:
+                tag = str(row.get("tag", "")).strip().lower()
+                if tag:
+                    tags.add(tag)
+        if "LastEvaluatedKey" not in resp:
+            break
+        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+    return sorted(tags)
+
+
+def build_sns_filter_policy(email: str, tags: list[str]) -> str:
+    """Filter on tag AND email so each inbox only receives its own notifications."""
+    return json.dumps({"tag": tags, "email": [email.lower().strip()]})
+
+
+def _confirmed_email_subscription_arns(email: str) -> list[str]:
+    normalized_email = email.lower().strip()
+    arns: list[str] = []
+    paginator = sns_client().get_paginator("list_subscriptions_by_topic")
+    for page in paginator.paginate(TopicArn=SNS_TOPIC_ARN):
+        for sub in page.get("Subscriptions", []):
+            if sub.get("Protocol") != "email":
+                continue
+            if str(sub.get("Endpoint", "")).lower() != normalized_email:
+                continue
+            arn = str(sub.get("SubscriptionArn", ""))
+            if arn and not arn.endswith("PendingConfirmation"):
+                arns.append(arn)
+    return arns
+
+
+def clear_sns_email_subscriptions(email: str) -> None:
+    """Remove SNS email subscriptions when the inbox has no tags left."""
+    if not SNS_TOPIC_ARN:
+        return
+    normalized_email = email.lower().strip()
+    if not normalized_email:
         return
     try:
+        for sub_arn in _confirmed_email_subscription_arns(normalized_email):
+            sns_client().unsubscribe(SubscriptionArn=sub_arn)
+            logger.info("Removed SNS subscription %s for %s", sub_arn, normalized_email)
+    except ClientError:
+        logger.exception("SNS unsubscribe failed for %s", normalized_email)
+
+
+def sync_sns_email_filter_for_email(email: str) -> None:
+    """Sync SNS filter: one confirmed subscription per inbox, all tags + email scoped.
+
+    - Adding tags updates FilterPolicy (no extra AWS Confirm clicks).
+    - email attribute in policy prevents cross-user mail leakage on shared tags.
+    - Removing the last tag clears SNS subscriptions so stale filters cannot deliver mail.
+    """
+    if not SNS_TOPIC_ARN or not SNS_NOTIFICATIONS_ENABLED:
+        return
+    normalized_email = email.lower().strip()
+    if not normalized_email:
+        return
+
+    tags = tags_for_email(normalized_email)
+    if not tags:
+        logger.info("No DynamoDB tags left for %s; clearing SNS subscriptions", normalized_email)
+        clear_sns_email_subscriptions(normalized_email)
+        return
+
+    filter_policy = build_sns_filter_policy(normalized_email, tags)
+    try:
+        sub_arns = _confirmed_email_subscription_arns(normalized_email)
+        if sub_arns:
+            for sub_arn in sub_arns:
+                sns_client().set_subscription_attributes(
+                    SubscriptionArn=sub_arn,
+                    AttributeName="FilterPolicy",
+                    AttributeValue=filter_policy,
+                )
+            logger.info("Updated SNS filter for %s tags=%s", normalized_email, tags)
+            return
+
         sns_client().subscribe(
             TopicArn=SNS_TOPIC_ARN,
             Protocol="email",
-            Endpoint=email,
-            Attributes={"FilterPolicy": json.dumps({"tag": [tag]})},
+            Endpoint=normalized_email,
+            Attributes={"FilterPolicy": filter_policy},
         )
-        logger.info("SNS email subscription requested for %s tag=%s", email, tag)
+        logger.info("SNS email subscription requested for %s tags=%s", normalized_email, tags)
     except ClientError:
-        logger.exception("SNS subscribe failed for %s tag=%s", email, tag)
+        logger.exception("SNS filter sync failed for %s", normalized_email)
 
 
 def list_user_subscriptions(user_sub: str) -> list[dict[str, Any]]:
@@ -117,7 +202,8 @@ def build_subscribe_message(email: str, tag: str) -> tuple[str, str]:
         f"Tag: {tag}\n"
         f"Notification email: {email}\n\n"
         f"You will receive alerts when new media matches this tag.\n"
-        f"If this is your first time, also confirm the separate AWS SNS email when it arrives.\n"
+        f"First-time only: confirm the AWS SNS email once for this inbox; "
+        f"adding more tags later does not require another confirm.\n"
     )
     return subject, body
 
@@ -159,19 +245,21 @@ def subscribe_tags(user_sub: str, email: str, tags: list[str]) -> tuple[list[str
     from datetime import datetime, timezone
 
     subscribed: list[str] = []
+    normalized_email = email.lower().strip()
     now = datetime.now(timezone.utc).isoformat()
     for tag in normalize_tags(tags):
         table.put_item(
             Item={
                 "userSub": user_sub,
                 "tag": tag,
-                "email": email,
+                "email": normalized_email,
                 "createdAt": now,
             }
         )
         subscribed.append(tag)
-        register_sns_email_filter(email, tag)
-    notifications_sent = notify_subscribe_confirmation(email, subscribed) if subscribed else 0
+    if subscribed:
+        sync_sns_email_filter_for_email(normalized_email)
+    notifications_sent = notify_subscribe_confirmation(normalized_email, subscribed) if subscribed else 0
     return subscribed, notifications_sent
 
 
@@ -182,6 +270,7 @@ def unsubscribe_tags(user_sub: str, tags: list[str]) -> tuple[list[str], int]:
 
     unsubscribed: list[str] = []
     notifications_sent = 0
+    emails_to_sync: set[str] = set()
     for tag in normalize_tags(tags):
         try:
             resp = table.get_item(Key={"userSub": user_sub, "tag": tag})
@@ -193,8 +282,11 @@ def unsubscribe_tags(user_sub: str, tags: list[str]) -> tuple[list[str], int]:
             unsubscribed.append(tag)
             if email:
                 notifications_sent += notify_unsubscribe_confirmation(email, [tag])
+                emails_to_sync.add(email)
         except ClientError:
             logger.exception("Failed to unsubscribe userSub=%s tag=%s", user_sub, tag)
+    for email in emails_to_sync:
+        sync_sns_email_filter_for_email(email)
     return unsubscribed, notifications_sent
 
 
@@ -251,7 +343,7 @@ def publish_sns_notification(email: str, subject: str, body: str, matched_tags: 
                     Message=body,
                     MessageAttributes={
                         "tag": {"DataType": "String", "StringValue": tag},
-                        "email": {"DataType": "String", "StringValue": email},
+                        "email": {"DataType": "String", "StringValue": email.lower().strip()},
                     },
                 )
                 logger.info(
