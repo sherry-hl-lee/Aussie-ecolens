@@ -63,11 +63,21 @@ export default function UploadSection({ busy, onUpload }) {
             e.target.value = '';
           }}
         />
-        <div className="upload-dropzone-icon" aria-hidden="true">
-          🌿
-        </div>
-        <strong>{dragging ? 'Release to upload' : 'Drop a file here or click to browse'}</strong>
-        <span>JPEG, PNG, WebP, MP4 and more</span>
+        {busy ? (
+          <>
+            <div className="spinner upload-dropzone-spinner" aria-hidden="true" />
+            <strong>Uploading…</strong>
+            <span>Uploading to storage and waiting for processing</span>
+          </>
+        ) : (
+          <>
+            <div className="upload-dropzone-icon" aria-hidden="true">
+              🌿
+            </div>
+            <strong>{dragging ? 'Release to upload' : 'Drop a file here or click to browse'}</strong>
+            <span>JPEG, PNG, WebP, MP4 and more</span>
+          </>
+        )}
       </div>
     </section>
   );

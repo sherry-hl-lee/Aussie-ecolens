@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
+  ApiError,
   bulkTags,
   deleteFiles,
-  getApiBaseUrl,
   getUploadMode,
   listFiles,
   normalizeMediaItems,
@@ -21,45 +21,82 @@ import QueryPanel from '../components/QueryPanel.jsx';
 import NotificationSection from '../components/NotificationSection.jsx';
 import TagManageSection from '../components/TagManageSection.jsx';
 import UploadSection from '../components/UploadSection.jsx';
-import { useApiAction } from '../hooks/useApiAction.js';
+import { formatError, useApiAction } from '../hooks/useApiAction.js';
 
 export default function DashboardPage() {
   const { user, signOut, getToken } = useAuth();
   const { busy, error, notice, warning, setError, setNotice, setWarning, clearMessages, run } =
     useApiAction(getToken);
 
-  const [items, setItems] = useState([]);
+  const [exploreItems, setExploreItems] = useState([]);
   const [mineItems, setMineItems] = useState([]);
-  const [mediaTotal, setMediaTotal] = useState(null);
+  const [exploreTotal, setExploreTotal] = useState(null);
+  const [mineTotal, setMineTotal] = useState(null);
   const [browseMode, setBrowseMode] = useState('explore');
   const [selectedUrls, setSelectedUrls] = useState(() => new Set());
   const [lastResponse, setLastResponse] = useState(null);
   const [modal, setModal] = useState(null);
   const [listLoading, setListLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+
+  const galleryItems = browseMode === 'mine' ? mineItems : exploreItems;
+  const galleryTotal = browseMode === 'mine' ? mineTotal : exploreTotal;
+
+  function filterMineOnly(items) {
+    if (!user?.uploadedBy) return items;
+    const owned = items.filter((item) => item?.uploadedBy && isItemOwnedByUser(item, user));
+    if (owned.length) return owned;
+    // Legacy rows from GET /files?user=me without uploadedBy metadata
+    return items;
+  }
+
+  async function fetchMineItems(token) {
+    try {
+      const data = await listFiles(token, { limit: 100, offset: 0, user: 'me' });
+      return { data, items: filterMineOnly(normalizeMediaItems(data)) };
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        const data = await listFiles(token, { limit: 100, offset: 0 });
+        return { data, items: filterMineOnly(normalizeMediaItems(data)) };
+      }
+      throw err;
+    }
+  }
 
   const refreshList = useCallback(async () => {
     setListLoading(true);
-    const listParams =
-      browseMode === 'mine' ? { limit: 100, offset: 0, user: 'me' } : { limit: 100, offset: 0 };
-    const data = await run((token) => listFiles(token, listParams));
-    setListLoading(false);
-    if (data) {
-      const normalized = normalizeMediaItems(data);
-      setItems(normalized);
-      setMediaTotal(typeof data.total === 'number' ? data.total : normalized.length);
-      setLastResponse(data);
-      if (browseMode === 'mine') {
-        setMineItems(normalized);
+    try {
+      const token = await getToken();
+      if (!token) {
+        throw new Error('No authentication token. Please sign in again.');
       }
+
+      if (browseMode === 'mine') {
+        const { data, items } = await fetchMineItems(token);
+        setMineItems(items);
+        setMineTotal(items.length);
+        setLastResponse(data);
+        return;
+      }
+
+      const data = await listFiles(token, { limit: 100, offset: 0 });
+      const normalized = normalizeMediaItems(data);
+      setExploreItems(normalized);
+      setExploreTotal(typeof data.total === 'number' ? data.total : normalized.length);
+      setLastResponse(data);
+    } catch (err) {
+      setError(formatError(err));
+    } finally {
+      setListLoading(false);
     }
-  }, [run, browseMode]);
+  }, [browseMode, getToken, setError, user]);
 
   useEffect(() => {
     refreshList();
   }, [refreshList]);
 
   function itemByUrl(fileUrl) {
-    return items.find((it) => it.fileUrl === fileUrl);
+    return galleryItems.find((it) => it.fileUrl === fileUrl);
   }
 
   function canSelectItem(item) {
@@ -79,7 +116,10 @@ export default function DashboardPage() {
   }
 
   function selectAllOwned() {
-    const owned = items.filter((it) => canSelectItem(it)).map((it) => it.fileUrl).filter(Boolean);
+    const owned = galleryItems
+      .filter((it) => canSelectItem(it))
+      .map((it) => it.fileUrl)
+      .filter(Boolean);
     setSelectedUrls(new Set(owned));
   }
 
@@ -95,67 +135,53 @@ export default function DashboardPage() {
   }
 
   async function handleUpload(file) {
-    const data = await run((token) => uploadFile(file, token));
-    if (data) {
+    setUploading(true);
+    setError(null);
+    try {
+      const token = await getToken();
+      if (!token) {
+        throw new Error('No authentication token. Please sign in again.');
+      }
+      const data = await uploadFile(file, token);
       setLastResponse(data);
       if (data.deduplicated) {
         setWarning('This file already exists in the system. Duplicate upload blocked.');
-        if (data.item) {
-          setItems((prev) => {
-            const without = prev.filter((p) => p.fileUrl !== data.item.fileUrl);
-            return [data.item, ...without];
-          });
-        }
       } else if (data.item) {
         const tags = (data.item.tags || []).join(', ') || '(none)';
         setNotice(`Upload successful! Auto tags: ${tags}`);
-        setItems((prev) => {
-          const without = prev.filter((p) => p.fileUrl !== data.item.fileUrl);
-          return [data.item, ...without];
-        });
-        setMediaTotal((total) => (typeof total === 'number' ? total + 1 : 1));
-        if (browseMode === 'mine') {
-          await refreshList();
-        }
       } else {
         setNotice('Upload successful!');
-        await refreshList();
       }
+      await refreshList();
+      try {
+        const { items } = await fetchMineItems(token);
+        setMineItems(items);
+        setMineTotal(items.length);
+      } catch {
+        /* My Uploads sync is best-effort; Explore refresh already succeeded */
+      }
+    } catch (err) {
+      setError(formatError(err));
+    } finally {
+      setUploading(false);
     }
-  }
-
-  function filterToMyUploads(candidates) {
-    const mineUrls = new Set(mineItems.map((it) => it.fileUrl).filter(Boolean));
-    return candidates.filter(
-      (item) =>
-        isItemOwnedByUser(item, user) || (item.fileUrl && mineUrls.has(item.fileUrl)),
-    );
   }
 
   async function applyQueryResult(data) {
     if (!data) return;
     const normalized = normalizeMediaItems(data);
     setLastResponse(data);
+    const count = data.count ?? data.total ?? normalized.length;
+
+    setExploreItems(normalized);
+    setExploreTotal(count);
 
     if (browseMode === 'mine') {
-      const baseline = mineItems.length ? mineItems : items;
-      const filtered = filterToMyUploads(normalized);
-      if (!filtered.length) {
-        setItems(baseline);
-        setMediaTotal(baseline.length);
-        setNotice('No matches in your uploads. Showing all your files.');
-      } else {
-        setItems(filtered);
-        setMediaTotal(filtered.length);
-        setNotice(`Found ${filtered.length} matching file(s) in your uploads.`);
-      }
-      clearSelection();
+      setNotice(`Found ${count} file(s). My Uploads is unchanged — switch to Explore to view results.`);
       return;
     }
 
-    setItems(normalized);
-    setMediaTotal(data.count ?? data.total ?? normalized.length);
-    setNotice(`Found ${data.count ?? normalized.length} file(s).`);
+    setNotice(`Found ${count} file(s).`);
     clearSelection();
   }
 
@@ -287,7 +313,7 @@ export default function DashboardPage() {
 
   const selectedOwnedCount = ownedSelectedUrls().length;
   const welcomeName = user?.displayName || user?.email || 'Explorer';
-  const displayedTotal = mediaTotal ?? items.length;
+  const displayedTotal = galleryTotal ?? galleryItems.length;
 
   return (
     <div className="app-shell">
@@ -336,7 +362,7 @@ export default function DashboardPage() {
 
         <div className="dashboard-grid">
           <div className="dashboard-col">
-            <UploadSection busy={busy} onUpload={handleUpload} />
+            <UploadSection busy={uploading} onUpload={handleUpload} />
           </div>
           <div className="dashboard-col">
             <QueryPanel
@@ -399,11 +425,11 @@ export default function DashboardPage() {
 
           <p className="muted">
             {browseMode === 'explore'
-              ? 'All platform observations. Hover a thumbnail and click to view full size.'
-              : 'Only media you uploaded. You can edit tags or delete items here.'}
+              ? 'All platform observations. Search results appear here. Hover a thumbnail and click to view full size.'
+              : 'Only media you uploaded. Search does not change this list — use Explore for platform-wide results.'}
           </p>
           <MediaGallery
-            items={items}
+            items={galleryItems}
             selectedUrls={selectedUrls}
             onToggleSelect={toggleSelect}
             onOpenItem={handleOpenItem}
