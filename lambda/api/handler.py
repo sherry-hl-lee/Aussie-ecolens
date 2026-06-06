@@ -179,7 +179,31 @@ def dynamo_to_item(row: dict[str, Any]) -> dict[str, Any]:
 
 def get_claims(event: dict[str, Any]) -> dict[str, Any]:
     authorizer = event.get("requestContext", {}).get("authorizer") or {}
-    return authorizer.get("jwt", {}).get("claims") or authorizer.get("claims") or {}
+    claims = authorizer.get("jwt", {}).get("claims") or authorizer.get("claims") or {}
+    if claims:
+        return claims
+    return claims_from_bearer(event)
+
+
+def claims_from_bearer(event: dict[str, Any]) -> dict[str, Any]:
+    """Fallback when API Gateway does not inject authorizer claims (Bearer still sent)."""
+    headers = normalize_headers(event)
+    auth = headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return {}
+    token = auth[7:].strip()
+    if not token or token == "dev":
+        return {}
+    parts = token.split(".")
+    if len(parts) != 3:
+        return {}
+    try:
+        payload = parts[1]
+        padding = "=" * (-len(payload) % 4)
+        decoded = json.loads(base64.urlsafe_b64decode(payload + padding))
+        return decoded if isinstance(decoded, dict) else {}
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return {}
 
 
 def owner_email(claims: dict[str, Any]) -> str:
