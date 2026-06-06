@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+from urllib.error import URLError
 from urllib.request import urlopen
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
@@ -22,6 +23,24 @@ from PIL import Image
 RESAMPLE = Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
 
 BASE_DIR = Path(__file__).resolve().parent
+
+
+def load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+load_env_file(BASE_DIR / ".env")
+
 DATA_DIR = BASE_DIR / "data"
 UPLOADS_DIR = DATA_DIR / "uploads"
 THUMBNAILS_DIR = DATA_DIR / "thumbnails"
@@ -32,6 +51,12 @@ COGNITO_REGION = os.getenv("COGNITO_REGION", "").strip()
 COGNITO_USER_POOL_ID = os.getenv("COGNITO_USER_POOL_ID", "").strip()
 COGNITO_APP_CLIENT_ID = os.getenv("COGNITO_APP_CLIENT_ID", "").strip()
 AUTH_REQUIRED = bool(COGNITO_REGION and COGNITO_USER_POOL_ID)
+SNS_TOPIC_ARN = os.getenv("SNS_TOPIC_ARN", "").strip()
+SNS_NOTIFICATIONS_ENABLED = os.getenv("SNS_NOTIFICATIONS_ENABLED", "true").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+}
 
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 THUMBNAILS_DIR.mkdir(parents=True, exist_ok=True)
@@ -105,7 +130,11 @@ def verify_cognito_token(token: str) -> dict[str, Any]:
     if not key:
         raise HTTPException(status_code=401, detail="Token key not found.")
 
-    options = {"verify_aud": bool(COGNITO_APP_CLIENT_ID)}
+    # Frontend sends Cognito id_token only; skip at_hash (needs access_token).
+    options = {
+        "verify_aud": bool(COGNITO_APP_CLIENT_ID),
+        "verify_at_hash": False,
+    }
     claims = jwt.decode(
         token,
         key,
@@ -118,13 +147,25 @@ def verify_cognito_token(token: str) -> dict[str, Any]:
 
 
 def require_auth(request: Request) -> dict[str, Any]:
-    token = parse_bearer_token(request)
+    auth = request.headers.get("Authorization", "")
     if AUTH_REQUIRED:
+        token = parse_bearer_token(request)
         try:
             return verify_cognito_token(token)
+        except HTTPException:
+            raise
         except JWTError as exc:
             raise HTTPException(status_code=401, detail=f"Invalid Cognito token: {exc}") from exc
-    return {"sub": "dev-user", "mode": "dev"}
+
+    cognito_configured = bool(COGNITO_REGION and COGNITO_USER_POOL_ID)
+    if cognito_configured and auth.startswith("Bearer "):
+        token = auth[7:].strip()
+        if token and token != "dev":
+            try:
+                return verify_cognito_token(token)
+            except (JWTError, HTTPException, URLError, OSError, ValueError):
+                logger.warning("Cognito token ignored in dev mode; using dev-user fallback")
+    return {"sub": "dev-user", "email": "dev-user@dev.local", "mode": "dev"}
 
 
 def init_db() -> None:
@@ -152,6 +193,18 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE files ADD COLUMN detection_source TEXT NOT NULL DEFAULT 'fallback:checksum'"
             )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tag_subscriptions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_sub TEXT NOT NULL,
+              email TEXT NOT NULL,
+              tag TEXT NOT NULL,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(user_sub, tag)
+            )
+            """
+        )
 
 
 def load_species_names() -> list[str]:
@@ -287,6 +340,179 @@ def all_items() -> list[dict[str, Any]]:
     return [row_to_item(r) for r in rows]
 
 
+def user_sub_from_claims(claims: dict[str, Any]) -> str:
+    return str(claims.get("sub") or claims.get("username") or "dev-user")
+
+
+def user_email_from_claims(claims: dict[str, Any], override: str = "") -> str:
+    override = override.strip()
+    if override:
+        return override.lower()
+    for key in ("email", "preferred_username"):
+        value = str(claims.get(key, "")).strip()
+        if value and "@" in value:
+            return value.lower()
+    return f"{user_sub_from_claims(claims)}@dev.local"
+
+
+def normalize_tags(tags: list[Any]) -> list[str]:
+    return sorted({str(t).strip().lower() for t in tags if str(t).strip()})
+
+
+def list_user_subscriptions(user_sub: str) -> list[dict[str, Any]]:
+    with db() as conn:
+        rows = conn.execute(
+            """
+            SELECT tag, email, created_at
+            FROM tag_subscriptions
+            WHERE user_sub = ?
+            ORDER BY tag ASC
+            """,
+            (user_sub,),
+        ).fetchall()
+    return [
+        {"tag": row["tag"], "email": row["email"], "createdAt": row["created_at"]}
+        for row in rows
+    ]
+
+
+def subscribe_tags(user_sub: str, email: str, tags: list[str]) -> list[str]:
+    subscribed: list[str] = []
+    with db() as conn:
+        for tag in normalize_tags(tags):
+            conn.execute(
+                """
+                INSERT INTO tag_subscriptions (user_sub, email, tag)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_sub, tag) DO UPDATE SET email = excluded.email
+                """,
+                (user_sub, email, tag),
+            )
+            subscribed.append(tag)
+            register_sns_email_filter(email, tag)
+    return subscribed
+
+
+def unsubscribe_tags(user_sub: str, tags: list[str]) -> list[str]:
+    unsubscribed: list[str] = []
+    with db() as conn:
+        for tag in normalize_tags(tags):
+            cur = conn.execute(
+                "DELETE FROM tag_subscriptions WHERE user_sub = ? AND tag = ?",
+                (user_sub, tag),
+            )
+            if cur.rowcount:
+                unsubscribed.append(tag)
+    return unsubscribed
+
+
+def matching_subscriptions(file_tags: list[str]) -> dict[str, set[str]]:
+    normalized = normalize_tags(file_tags)
+    if not normalized:
+        return {}
+    placeholders = ",".join("?" for _ in normalized)
+    with db() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT email, tag
+            FROM tag_subscriptions
+            WHERE tag IN ({placeholders})
+            """,
+            normalized,
+        ).fetchall()
+    recipients: dict[str, set[str]] = {}
+    for row in rows:
+        recipients.setdefault(row["email"], set()).add(row["tag"])
+    return recipients
+
+
+def build_notification_message(item: dict[str, Any], matched_tags: set[str]) -> tuple[str, str]:
+    subject = "EcoLens: new media matches your tag subscription"
+    body = (
+        f"A new {item.get('mediaType', 'file')} was added to Aussie EcoLens.\n\n"
+        f"Matched tags: {', '.join(sorted(matched_tags))}\n"
+        f"All detected tags: {', '.join(item.get('tags', []))}\n"
+        f"File URL: {item.get('fileUrl', '')}\n"
+        f"Thumbnail: {item.get('thumbnailUrl', '') or 'n/a'}\n"
+        f"Detection source: {item.get('detectionSource', 'unknown')}\n"
+    )
+    return subject, body
+
+
+def register_sns_email_filter(email: str, tag: str) -> None:
+    if not SNS_TOPIC_ARN or not SNS_NOTIFICATIONS_ENABLED:
+        return
+    try:
+        import boto3
+
+        sns = boto3.client("sns")
+        sns.subscribe(
+            TopicArn=SNS_TOPIC_ARN,
+            Protocol="email",
+            Endpoint=email,
+            Attributes={"FilterPolicy": json.dumps({"tag": [tag]})},
+        )
+        logger.info("SNS email subscription requested for %s tag=%s", email, tag)
+    except Exception:
+        logger.exception("SNS subscribe failed for %s tag=%s", email, tag)
+
+
+def publish_sns_notification(email: str, subject: str, body: str, matched_tags: set[str]) -> str:
+    if not SNS_NOTIFICATIONS_ENABLED:
+        logger.info("[notifications disabled] Would notify %s: %s", email, subject)
+        return "disabled"
+
+    if SNS_TOPIC_ARN:
+        try:
+            import boto3
+
+            sns = boto3.client("sns")
+            for tag in sorted(matched_tags):
+                response = sns.publish(
+                    TopicArn=SNS_TOPIC_ARN,
+                    Subject=subject[:100],
+                    Message=body,
+                    MessageAttributes={
+                        "tag": {"DataType": "String", "StringValue": tag},
+                        "email": {"DataType": "String", "StringValue": email},
+                    },
+                )
+                logger.info(
+                    "SNS publish tag=%s email=%s MessageId=%s",
+                    tag,
+                    email,
+                    response.get("MessageId"),
+                )
+            return "sns"
+        except Exception:
+            logger.exception("SNS publish failed for %s; falling back to log simulation", email)
+
+    logger.info(
+        "[notification simulated] email=%s subject=%s body=%s",
+        email,
+        subject,
+        body.replace("\n", " | "),
+    )
+    return "simulated"
+
+
+def notify_for_tags_on_item(item: dict[str, Any], trigger_tags: list[str]) -> int:
+    recipients = matching_subscriptions(trigger_tags)
+    if not recipients:
+        return 0
+
+    sent = 0
+    for email, matched_tags in recipients.items():
+        subject, body = build_notification_message(item, matched_tags)
+        publish_sns_notification(email, subject, body, matched_tags)
+        sent += 1
+    return sent
+
+
+def notify_for_media_item(item: dict[str, Any]) -> int:
+    return notify_for_tags_on_item(item, item.get("tags", []))
+
+
 @app.on_event("startup")
 def startup() -> None:
     init_db()
@@ -304,6 +530,8 @@ def auth_config() -> dict[str, Any]:
         "cognitoRegion": COGNITO_REGION,
         "userPoolId": COGNITO_USER_POOL_ID,
         "appClientIdConfigured": bool(COGNITO_APP_CLIENT_ID),
+        "snsConfigured": bool(SNS_TOPIC_ARN),
+        "notificationsEnabled": SNS_NOTIFICATIONS_ENABLED,
     }
 
 
@@ -435,7 +663,9 @@ async def upload(file: UploadFile = File(...), claims: dict[str, Any] = Depends(
         item_row = conn.execute(
             "SELECT * FROM files WHERE checksum = ?", (digest,)
         ).fetchone()
-    return {"deduplicated": False, "item": row_to_item(item_row)}
+    item = row_to_item(item_row)
+    notifications_sent = notify_for_media_item(item)
+    return {"deduplicated": False, "item": item, "notificationsSent": notifications_sent}
 
 
 @app.post("/query/species")
@@ -491,12 +721,51 @@ async def query_by_file(file: UploadFile = File(...), claims: dict[str, Any] = D
     return {"queryTags": tags, "count": len(results), "items": results}
 
 
+@app.get("/notifications/subscriptions")
+def list_subscriptions(claims: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    user_sub = user_sub_from_claims(claims)
+    subs = list_user_subscriptions(user_sub)
+    return {
+        "userSub": user_sub,
+        "email": user_email_from_claims(claims),
+        "subscriptions": subs,
+        "snsConfigured": bool(SNS_TOPIC_ARN),
+        "notificationsEnabled": SNS_NOTIFICATIONS_ENABLED,
+    }
+
+
+@app.post("/notifications/subscribe")
+def subscribe_notification(payload: dict[str, Any], claims: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    tags = payload.get("tags") or []
+    if not tags:
+        raise HTTPException(status_code=400, detail="tags is required")
+    user_sub = user_sub_from_claims(claims)
+    email = user_email_from_claims(claims, str(payload.get("email", "")))
+    subscribed = subscribe_tags(user_sub, email, tags)
+    return {
+        "subscribed": subscribed,
+        "email": email,
+        "snsConfigured": bool(SNS_TOPIC_ARN),
+    }
+
+
+@app.post("/notifications/unsubscribe")
+def unsubscribe_notification(payload: dict[str, Any], claims: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    tags = payload.get("tags") or []
+    if not tags:
+        raise HTTPException(status_code=400, detail="tags is required")
+    user_sub = user_sub_from_claims(claims)
+    unsubscribed = unsubscribe_tags(user_sub, tags)
+    return {"unsubscribed": unsubscribed}
+
+
 @app.post("/tags/bulk")
 def tags_bulk(payload: dict[str, Any], claims: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
     urls = payload.get("urls", [])
     tags = [str(t).lower() for t in payload.get("tags", [])]
     operation = int(payload.get("operation", 1))
     updated = 0
+    notifications_sent = 0
 
     with db() as conn:
         for url in urls:
@@ -518,7 +787,10 @@ def tags_bulk(payload: dict[str, Any], claims: dict[str, Any] = Depends(require_
                 (json.dumps(sorted(item_tags)), json.dumps(counts), row["id"]),
             )
             updated += 1
-    return {"updated": updated}
+            if operation == 1:
+                updated_row = conn.execute("SELECT * FROM files WHERE id = ?", (row["id"],)).fetchone()
+                notifications_sent += notify_for_tags_on_item(row_to_item(updated_row), tags)
+    return {"updated": updated, "notificationsSent": notifications_sent}
 
 
 @app.post("/files/delete")

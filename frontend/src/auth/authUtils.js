@@ -1,5 +1,19 @@
+export function isJwtExpired(token, skewSeconds = 60) {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+    if (!payload.exp) return false;
+    return Date.now() / 1000 >= payload.exp - skewSeconds;
+  } catch {
+    return true;
+  }
+}
+
 export function isValidJwt(token) {
-  return typeof token === 'string' && token.split('.').length === 3;
+  return (
+    typeof token === 'string' &&
+    token.split('.').length === 3 &&
+    !isJwtExpired(token)
+  );
 }
 
 export function claimsFromJwt(token) {

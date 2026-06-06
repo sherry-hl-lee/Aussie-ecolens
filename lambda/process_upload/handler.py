@@ -31,6 +31,8 @@ from urllib.parse import quote
 import boto3
 from botocore.exceptions import ClientError
 
+from sns_notifications import notify_for_media_item
+
 # After copy: from inference import detect_image_tags, detect_video_tags
 try:
     from inference import detect_image_tags, detect_video_tags
@@ -115,8 +117,14 @@ def process_object(bucket: str, key: str) -> dict[str, Any]:
             "createdAt": datetime.now(timezone.utc).isoformat(),
         }
         put_item(item)
+        notifications_sent = notify_for_media_item(item)
         gcp_result = notify_gcp_tagged(item, key)
-        result: dict[str, Any] = {"deduplicated": False, "checksum": checksum, "item": item}
+        result: dict[str, Any] = {
+            "deduplicated": False,
+            "checksum": checksum,
+            "item": item,
+            "notificationsSent": notifications_sent,
+        }
         if gcp_result is not None:
             result["gcpNotify"] = gcp_result
         return result

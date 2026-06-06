@@ -18,6 +18,7 @@ import { Alert } from '../components/Alert.jsx';
 import ImageModal from '../components/ImageModal.jsx';
 import MediaGallery from '../components/MediaGallery.jsx';
 import QueryPanel from '../components/QueryPanel.jsx';
+import NotificationSection from '../components/NotificationSection.jsx';
 import TagManageSection from '../components/TagManageSection.jsx';
 import UploadSection from '../components/UploadSection.jsx';
 import { useApiAction } from '../hooks/useApiAction.js';
@@ -353,6 +354,11 @@ export default function DashboardPage() {
               onDeleteSelected={handleDeleteSelected}
               onSelectAll={selectAllOwned}
               onClearSelection={clearSelection}
+            />
+            <NotificationSection
+              busy={busy}
+              getToken={getToken}
+              onNotice={(message) => setNotice(message)}
             />
           </div>
         </div>

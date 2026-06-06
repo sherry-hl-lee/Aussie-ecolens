@@ -17,7 +17,7 @@ Exception: `GET /health`, `GET /auth/config` (optional public).
 
 | Method | Path | Body | Response |
 |--------|------|------|----------|
-| GET | `/auth/config` | — | `{ authRequired, cognitoRegion, userPoolId, appClientIdConfigured }` |
+| GET | `/auth/config` | — | `{ authRequired, cognitoRegion, userPoolId, appClientIdConfigured, snsConfigured, notificationsEnabled }` |
 | GET | `/auth/me` | — | `{ authenticated, claims }` |
 
 ---
@@ -90,8 +90,20 @@ Response:
 
 | Method | Path | Body | Response |
 |--------|------|------|----------|
-| POST | `/tags/bulk` | `{ "urls": ["..."], "tags": ["koala"], "operation": 1 }` | `{ updated }` (`1` add, `0` remove) |
+| POST | `/tags/bulk` | `{ "urls": ["..."], "tags": ["koala"], "operation": 1 }` | `{ updated, notificationsSent? }` (`1` add, `0` remove) |
 | POST | `/files/delete` | `{ "urls": ["..."] }` | `{ deleted }` |
+
+---
+
+## Notifications (SNS)
+
+| Method | Path | Body | Response |
+|--------|------|------|----------|
+| GET | `/notifications/subscriptions` | — | `{ userSub, email, subscriptions[], snsConfigured, notificationsEnabled }` |
+| POST | `/notifications/subscribe` | `{ "tags": ["dingo"], "email": "optional@override.com" }` | `{ subscribed[], email, snsConfigured }` |
+| POST | `/notifications/unsubscribe` | `{ "tags": ["dingo"] }` | `{ unsubscribed[] }` |
+
+See `docs/sns-notifications.md` for SNS topic setup and filter policies.
 
 ---
 
