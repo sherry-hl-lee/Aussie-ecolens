@@ -16,10 +16,12 @@ Before deploy:
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
 import os
+import re
 import tempfile
 import urllib.error
 import urllib.request
@@ -61,7 +63,9 @@ _TAXONOMY_MAP: dict[str, str] = {}
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
-    """Lambda entry for S3 event notifications."""
+    """Lambda entry for S3 events or direct infer-only invocations from ecolens-api."""
+    if event.get("action") == "infer":
+        return infer_tags_only(event)
     results = []
     for record in event.get("Records", []):
         bucket = record["s3"]["bucket"]["name"]
@@ -71,6 +75,46 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             continue
         results.append(process_object(bucket, key))
     return {"processed": results}
+
+
+def safe_filename(name: str) -> str:
+    base = os.path.basename(name.replace("\\", "/")).strip()
+    base = re.sub(r"[^\w.\-]+", "_", base)
+    return base or "query.bin"
+
+
+def infer_tags_only(event: dict[str, Any]) -> dict[str, Any]:
+    """Run ML on uploaded bytes without writing to S3 or DynamoDB (query-by-file)."""
+    content_b64 = str(event.get("contentBase64") or "").strip()
+    if not content_b64:
+        return {"error": "contentBase64 is required"}
+    try:
+        content = base64.b64decode(content_b64)
+    except (ValueError, TypeError):
+        return {"error": "Invalid contentBase64"}
+
+    filename = safe_filename(str(event.get("filename") or "query.bin"))
+    if not content:
+        return {"error": "Empty file."}
+
+    suffix = Path(filename).suffix.lower()
+    media_type = "video" if suffix in {".mp4", ".mov", ".avi", ".mkv", ".webm"} else "image"
+    checksum = hashlib.sha256(content).hexdigest()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        local_path = Path(tmp) / filename
+        local_path.write_bytes(content)
+        model_path = ensure_model_downloaded(tmp)
+        taxonomy_map = load_taxonomy_map(tmp)
+        tags, tag_counts, detection_source = run_detection(
+            local_path, media_type, checksum, model_path, taxonomy_map
+        )
+
+    return {
+        "tags": [str(t).lower() for t in tags],
+        "tagCounts": {str(k).lower(): int(v) for k, v in tag_counts.items()},
+        "detectionSource": detection_source,
+    }
 
 
 def process_object(bucket: str, key: str) -> dict[str, Any]:

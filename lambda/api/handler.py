@@ -44,8 +44,12 @@ PRESIGNED_EXPIRY = int(os.environ.get("PRESIGNED_EXPIRY_SEC", "3600"))
 COGNITO_REGION = os.environ.get("COGNITO_REGION", "")
 COGNITO_USER_POOL_ID = os.environ.get("COGNITO_USER_POOL_ID", "")
 COGNITO_APP_CLIENT_ID = os.environ.get("COGNITO_APP_CLIENT_ID", "")
+PROCESS_UPLOAD_FUNCTION = os.environ.get("PROCESS_UPLOAD_FUNCTION_NAME", "ecolens-process-upload")
+# Lambda synchronous invoke payload limit is 6 MB; base64 adds overhead.
+MAX_QUERY_BY_FILE_BYTES = int(os.environ.get("MAX_QUERY_BY_FILE_BYTES", "4500000"))
 
 s3 = boto3.client("s3")
+lambda_client = boto3.client("lambda")
 dynamodb = boto3.resource("dynamodb")
 table = dynamodb.Table(TABLE_NAME) if TABLE_NAME else None
 
@@ -364,17 +368,60 @@ def parse_multipart_file(event: dict[str, Any]) -> tuple[bytes, str]:
 
 
 def query_tags_for_upload(content: bytes, filename: str) -> list[str]:
-    """Tags for query-by-file: reuse stored tags when checksum matches, else fallback."""
+    """Tags for query-by-file: reuse stored tags when checksum matches, else invoke ML Lambda."""
     digest = hashlib.sha256(content).hexdigest()
     existing = find_item_by_checksum(digest)
     if existing:
         return [str(t).lower() for t in existing.get("tags", [])]
-    seed = int(digest[:8], 16)
-    pool = ["dingo", "cattle", "magpie", "koala", "wombat"]
-    suffix = os.path.splitext(filename)[1].lower()
-    if suffix in {".mp4", ".mov", ".avi", ".mkv", ".webm"}:
-        pool = ["dingo", "magpie", "cattle"]
-    return [pool[seed % len(pool)]]
+
+    if len(content) > MAX_QUERY_BY_FILE_BYTES:
+        raise ValueError(
+            f"File too large for query-by-file (max {MAX_QUERY_BY_FILE_BYTES // 1_000_000}MB)."
+        )
+
+    payload = {
+        "action": "infer",
+        "filename": safe_filename(filename),
+        "contentBase64": base64.b64encode(content).decode("ascii"),
+    }
+    try:
+        resp = lambda_client.invoke(
+            FunctionName=PROCESS_UPLOAD_FUNCTION,
+            InvocationType="RequestResponse",
+            Payload=json.dumps(payload).encode("utf-8"),
+        )
+    except ClientError as exc:
+        logger.exception("Failed to invoke %s", PROCESS_UPLOAD_FUNCTION)
+        raise RuntimeError(
+            exc.response.get("Error", {}).get("Message", str(exc))
+        ) from exc
+
+    raw = resp["Payload"].read().decode("utf-8")
+    if resp.get("FunctionError"):
+        try:
+            err_payload = json.loads(raw)
+            message = err_payload.get("errorMessage") or raw
+        except json.JSONDecodeError:
+            message = raw
+        raise RuntimeError(message)
+
+    try:
+        result = json.loads(raw) if raw else {}
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Invalid response from inference Lambda") from exc
+
+    if result.get("error"):
+        raise RuntimeError(str(result["error"]))
+
+    tags = result.get("tags") or []
+    if not tags:
+        raise RuntimeError("Inference Lambda returned no tags")
+    logger.info(
+        "query-by-file inference source=%s tags=%s",
+        result.get("detectionSource", ""),
+        tags,
+    )
+    return [str(t).lower() for t in tags]
 
 
 # --- Routes ---
@@ -524,7 +571,13 @@ def query_by_file(event: dict[str, Any]) -> dict[str, Any]:
     if not content:
         return respond(400, {"detail": "Empty file."})
 
-    query_tags = query_tags_for_upload(content, _filename)
+    try:
+        query_tags = query_tags_for_upload(content, _filename)
+    except ValueError as exc:
+        return respond(400, {"detail": str(exc)})
+    except RuntimeError as exc:
+        return respond(502, {"detail": str(exc)})
+
     required = {t.lower() for t in query_tags}
     results = []
     for it in scan_all_items():
