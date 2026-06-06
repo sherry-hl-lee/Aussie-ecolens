@@ -10,7 +10,6 @@ import {
   userFromJwt,
 } from './authUtils.js';
 import {
-  postLoginRedirectTarget,
   startCognitoHostedUiSignIn,
   startCognitoHostedUiSignOut,
 } from './cognitoHostedUi.js';
@@ -45,6 +44,7 @@ export function AuthProvider({ children }) {
     if (hashResult.ok) {
       return true;
     }
+
 
     // 2) Stale authorization-code callback (?code=...) — Cognito pool uses implicit grant.
     if (hasOAuthCallbackParams()) {
