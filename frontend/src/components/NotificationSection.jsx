@@ -12,7 +12,7 @@ export default function NotificationSection({ busy, getToken, onNotice }) {
   const [email, setEmail] = useState('');
   const [snsConfigured, setSnsConfigured] = useState(false);
   const [subscriptions, setSubscriptions] = useState([]);
-  const [tagsInput, setTagsInput] = useState('dingo, koala');
+  const [tagsInput, setTagsInput] = useState('canis dingo, megapodius reinwardt');
   const [error, setError] = useState(null);
 
   const refresh = useCallback(async () => {
@@ -79,7 +79,7 @@ export default function NotificationSection({ busy, getToken, onNotice }) {
       const tagList = data.subscribed?.join(', ') || tags.join(', ');
       onNotice?.(
         data.snsConfigured
-          ? `Subscribed to ${tagList}. AWS confirmation email sent (${data.notificationsSent ?? 0}). Check inbox (confirm SNS if first time).`
+          ? `Subscribed to ${tagList}. Confirmation email sent (${data.notificationsSent ?? 0}). First time only: click AWS SNS confirm in inbox; more tags need no extra confirm.`
           : `Subscribed to ${tagList} (${data.notificationsSent ?? 0} notification(s) logged).`,
       );
       await refresh();
@@ -113,7 +113,7 @@ export default function NotificationSection({ busy, getToken, onNotice }) {
         Tag notifications (SNS)
       </h2>
       <p className="muted">
-        Subscribe to species tags and receive email when new media matches. AWS SNS uses filter policies per tag.
+        Subscribe to species tags and receive email when new media matches. One AWS SNS confirm per inbox; each tag add/remove sends its own email; only your inbox receives your notifications.
       </p>
 
       {loading ? <p className="muted">Loading subscriptions…</p> : null}
@@ -135,7 +135,7 @@ export default function NotificationSection({ busy, getToken, onNotice }) {
         type="text"
         value={tagsInput}
         disabled={busy}
-        placeholder="dingo, koala"
+        placeholder="canis dingo, megapodius reinwardt"
         onChange={(e) => setTagsInput(e.target.value)}
       />
 

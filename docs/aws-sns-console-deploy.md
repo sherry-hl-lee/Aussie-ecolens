@@ -103,7 +103,10 @@ arn:aws:sns:us-east-1:123456789012:ecolens-tag-alerts
       "Action": [
         "sns:Publish",
         "sns:Subscribe",
-        "sns:GetTopicAttributes"
+        "sns:GetTopicAttributes",
+        "sns:ListSubscriptionsByTopic",
+        "sns:SetSubscriptionAttributes",
+        "sns:Unsubscribe"
       ],
       "Resource": "arn:aws:sns:us-east-1:YOUR_ACCOUNT_ID:ecolens-tag-alerts"
     }
