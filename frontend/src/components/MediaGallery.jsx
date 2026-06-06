@@ -31,7 +31,7 @@ export default function MediaGallery({
         const thumb = item.thumbnailUrl || item.fileUrl;
         const isVideo = item.mediaType === 'video';
         const selected = selectedUrls.has(item.fileUrl);
-        const tags = (item.tags || []).slice(0, 4);
+        const tags = item.tags || [];
 
         return (
           <article
@@ -52,11 +52,22 @@ export default function MediaGallery({
               ) : (
                 <div className="gallery-video-placeholder">{isVideo ? '▶ Video' : 'No preview'}</div>
               )}
+              <div className="gallery-thumb-hover-tags" aria-hidden="true">
+                {tags.length ? (
+                  tags.map((tag) => (
+                    <span key={tag} className="gallery-hover-tag">
+                      {tag}
+                    </span>
+                  ))
+                ) : (
+                  <span className="gallery-hover-tag">untagged</span>
+                )}
+              </div>
             </button>
             <div className="gallery-meta">
               <div className="tag-pills">
                 {tags.length
-                  ? tags.map((tag) => (
+                  ? tags.slice(0, 4).map((tag) => (
                       <span key={tag} className="tag-pill">
                         {tag}
                       </span>

@@ -3,6 +3,7 @@ import {
   bulkTags,
   deleteFiles,
   getApiBaseUrl,
+  getUploadMode,
   listFiles,
   normalizeMediaItems,
   queryByFile,
@@ -22,20 +23,24 @@ import { useApiAction } from '../hooks/useApiAction.js';
 
 export default function DashboardPage() {
   const { user, signOut, getToken } = useAuth();
-  const { busy, error, notice, setError, setNotice, clearMessages, run } = useApiAction(getToken);
+  const { busy, error, notice, warning, setError, setNotice, setWarning, clearMessages, run } =
+    useApiAction(getToken);
 
   const [items, setItems] = useState([]);
+  const [mediaTotal, setMediaTotal] = useState(null);
   const [selectedUrls, setSelectedUrls] = useState(() => new Set());
   const [lastResponse, setLastResponse] = useState(null);
   const [modal, setModal] = useState(null);
-  const [galleryLoading, setGalleryLoading] = useState(false);
+  const [listLoading, setListLoading] = useState(true);
 
   const refreshList = useCallback(async () => {
-    setGalleryLoading(true);
+    setListLoading(true);
     const data = await run((token) => listFiles(token, { limit: 100, offset: 0 }));
-    setGalleryLoading(false);
+    setListLoading(false);
     if (data) {
-      setItems(normalizeMediaItems(data));
+      const normalized = normalizeMediaItems(data);
+      setItems(normalized);
+      setMediaTotal(typeof data.total === 'number' ? data.total : normalized.length);
       setLastResponse(data);
     }
   }, [run]);
@@ -62,20 +67,27 @@ export default function DashboardPage() {
   }
 
   async function handleUpload(file) {
-    const data = await run((token) => uploadFile(file, token), {
-      successMessage: 'Upload finished.',
-    });
+    const data = await run((token) => uploadFile(file, token));
     if (data) {
       setLastResponse(data);
       if (data.deduplicated) {
-        setNotice('Duplicate file — existing record returned (checksum match).');
-      }
-      if (data.item) {
+        setWarning('This file already exists in the system. Duplicate upload blocked.');
+        if (data.item) {
+          setItems((prev) => {
+            const without = prev.filter((p) => p.fileUrl !== data.item.fileUrl);
+            return [data.item, ...without];
+          });
+        }
+      } else if (data.item) {
+        const tags = (data.item.tags || []).join(', ') || '(none)';
+        setNotice(`Upload successful! Auto tags: ${tags}`);
         setItems((prev) => {
           const without = prev.filter((p) => p.fileUrl !== data.item.fileUrl);
           return [data.item, ...without];
         });
+        setMediaTotal((total) => (typeof total === 'number' ? total + 1 : 1));
       } else {
+        setNotice('Upload successful!');
         await refreshList();
       }
     }
@@ -83,15 +95,17 @@ export default function DashboardPage() {
 
   async function applyQueryResult(data) {
     if (!data) return;
+    const normalized = normalizeMediaItems(data);
     setLastResponse(data);
-    setItems(normalizeMediaItems(data));
-    setNotice(`Found ${data.count ?? normalizeMediaItems(data).length} file(s).`);
+    setItems(normalized);
+    setMediaTotal(data.count ?? data.total ?? normalized.length);
+    setNotice(`Found ${data.count ?? normalized.length} file(s).`);
     clearSelection();
   }
 
   async function handleQueryTagCount(payload) {
-    if (!payload || typeof payload !== 'object') {
-      setError('Invalid JSON for tag counts.');
+    if (!payload || typeof payload !== 'object' || !Object.keys(payload).length) {
+      setError('Add at least one tag with a minimum count.');
       return;
     }
     const data = await run((token) => queryTagsCount(payload, token));
@@ -135,23 +149,35 @@ export default function DashboardPage() {
         title: item.filename || 'Video',
         imageUrl: item.thumbnailUrl || null,
         fileUrl: item.fileUrl,
+        mediaType: 'video',
       });
       return;
     }
-    if (!item.thumbnailUrl) {
-      setModal({ title: item.filename, imageUrl: item.fileUrl, fileUrl: item.fileUrl });
+
+    let fullUrl = item.fileUrl || item.thumbnailUrl;
+    if (item.thumbnailUrl && item.fileUrl) {
+      try {
+        const token = await getToken();
+        if (token) {
+          const data = await queryThumbnail(item.thumbnailUrl, token);
+          if (data?.fileUrl) fullUrl = data.fileUrl;
+        }
+      } catch {
+        // Use fileUrl when thumbnail lookup fails (URL mismatch, etc.)
+      }
+    }
+
+    if (!fullUrl) {
+      setError('No image URL available for this item.');
       return;
     }
-    setGalleryLoading(true);
-    const data = await run((token) => queryThumbnail(item.thumbnailUrl, token));
-    setGalleryLoading(false);
-    if (data?.fileUrl) {
-      setModal({
-        title: item.filename || 'Image',
-        imageUrl: data.fileUrl,
-        fileUrl: data.fileUrl,
-      });
-    }
+
+    setModal({
+      title: item.filename || 'Image',
+      imageUrl: fullUrl,
+      fileUrl: item.fileUrl || fullUrl,
+      mediaType: 'image',
+    });
   }
 
   async function handleBulkTags({ tags, operation }) {
@@ -192,6 +218,7 @@ export default function DashboardPage() {
   }
 
   const selectedCount = selectedUrls.size;
+  const displayedTotal = mediaTotal ?? items.length;
 
   return (
     <div className="app-shell">
@@ -203,7 +230,8 @@ export default function DashboardPage() {
           <div>
             <h1>Aussie EcoLens</h1>
             <p>
-              {user?.email || 'Signed in'} · {getApiBaseUrl() || 'API not configured'}
+              {user?.email || 'Signed in'} · {getApiBaseUrl() || 'API not configured'} · upload:{' '}
+              {getUploadMode()}
             </p>
           </div>
         </div>
@@ -219,11 +247,12 @@ export default function DashboardPage() {
 
       <main className="app-main app-main-wide">
         <Alert type="error" message={error} onDismiss={() => setError(null)} />
+        <Alert type="warning" message={warning} onDismiss={() => setWarning(null)} />
         <Alert type="success" message={notice} onDismiss={() => setNotice(null)} />
 
         <div className="stats-strip">
           <div className="stat-chip">
-            <strong>{items.length}</strong>
+            <strong>{listLoading ? '…' : displayedTotal}</strong>
             <span>Media files</span>
           </div>
           <div className="stat-chip">
@@ -265,9 +294,9 @@ export default function DashboardPage() {
               <span className="card-icon" aria-hidden="true">
                 🖼️
               </span>
-              Results ({items.length})
+              Results ({listLoading ? '…' : displayedTotal})
             </h2>
-            {busy ? <span className="loading-pill">Working…</span> : null}
+            {busy || listLoading ? <span className="loading-pill">Working…</span> : null}
           </div>
           <p className="muted">Hover a thumbnail and click to view full size. Select items to edit tags or delete.</p>
           <MediaGallery
@@ -275,7 +304,7 @@ export default function DashboardPage() {
             selectedUrls={selectedUrls}
             onToggleSelect={toggleSelect}
             onOpenItem={handleOpenItem}
-            loading={galleryLoading && !items.length}
+            loading={listLoading}
           />
           <details className="raw-json">
             <summary>Raw API response</summary>
@@ -289,6 +318,7 @@ export default function DashboardPage() {
           title={modal.title}
           imageUrl={modal.imageUrl}
           fileUrl={modal.fileUrl}
+          mediaType={modal.mediaType}
           onClose={() => setModal(null)}
         />
       ) : null}
