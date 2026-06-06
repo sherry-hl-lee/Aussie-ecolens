@@ -9,6 +9,10 @@ function formatError(err) {
     if (err.status === 408) {
       return err.message;
     }
+    if (err.status === 403) {
+      const detail = err.data?.detail || err.data?.message;
+      return detail || 'You do not have permission for this action.';
+    }
     if (err.status === 500) {
       const detail = err.data?.detail || err.data?.message;
       return detail ? `Server error: ${detail}` : 'Server error (500). Check AWS Lambda logs or try again.';

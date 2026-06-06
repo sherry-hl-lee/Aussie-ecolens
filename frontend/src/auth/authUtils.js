@@ -2,20 +2,56 @@ export function isValidJwt(token) {
   return typeof token === 'string' && token.split('.').length === 3;
 }
 
-export function emailFromJwt(token) {
+export function claimsFromJwt(token) {
   try {
-    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-    return payload.email || payload['cognito:username'] || payload.sub || '';
+    return JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
   } catch {
-    return '';
+    return {};
   }
 }
 
+export function emailFromJwt(token) {
+  const claims = claimsFromJwt(token);
+  return claims.email || claims['cognito:username'] || claims.sub || '';
+}
+
+export function uploadedByFromClaims(claims) {
+  const raw = claims.email || claims['cognito:username'] || claims.sub || '';
+  return String(raw).trim().toLowerCase();
+}
+
+export function displayNameFromClaims(claims) {
+  const given = String(claims.given_name || '').trim();
+  const family = String(claims.family_name || '').trim();
+  if (given) {
+    return family ? `${given} ${family}` : given;
+  }
+  const name = String(claims.name || '').trim();
+  if (name) return name;
+  const email = emailFromJwtClaims(claims);
+  if (email.includes('@')) return email.split('@')[0];
+  return email || 'Explorer';
+}
+
+function emailFromJwtClaims(claims) {
+  return claims.email || claims['cognito:username'] || claims.sub || '';
+}
+
 export function userFromJwt(token) {
+  const claims = claimsFromJwt(token);
+  const email = emailFromJwtClaims(claims);
   return {
-    email: emailFromJwt(token),
+    email,
+    displayName: displayNameFromClaims(claims),
+    uploadedBy: uploadedByFromClaims(claims),
+    sub: claims.sub || '',
     token,
   };
+}
+
+export function isItemOwnedByUser(item, user) {
+  if (!item?.uploadedBy || !user?.uploadedBy) return false;
+  return String(item.uploadedBy).toLowerCase() === String(user.uploadedBy).toLowerCase();
 }
 
 /** Parse Cognito implicit-grant callback (#id_token=...) from the URL hash. */

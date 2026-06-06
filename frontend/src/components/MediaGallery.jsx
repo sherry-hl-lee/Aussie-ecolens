@@ -4,6 +4,7 @@ export default function MediaGallery({
   onToggleSelect,
   onOpenItem,
   loading,
+  canSelectItem,
 }) {
   if (loading) {
     return (
@@ -32,20 +33,27 @@ export default function MediaGallery({
         const isVideo = item.mediaType === 'video';
         const selected = selectedUrls.has(item.fileUrl);
         const tags = item.tags || [];
+        const selectable = canSelectItem ? canSelectItem(item) : true;
 
         return (
           <article
             key={item.fileUrl || item.checksum}
-            className={`gallery-card${selected ? ' selected' : ''}`}
+            className={`gallery-card${selected ? ' selected' : ''}${selectable ? '' : ' gallery-card--readonly'}`}
           >
-            <label className="gallery-select">
-              <input
-                type="checkbox"
-                checked={selected}
-                onChange={() => onToggleSelect(item.fileUrl)}
-              />
-              <span>{selected ? 'Selected' : 'Select'}</span>
-            </label>
+            {selectable ? (
+              <label className="gallery-select">
+                <input
+                  type="checkbox"
+                  checked={selected}
+                  onChange={() => onToggleSelect(item.fileUrl)}
+                />
+                <span>{selected ? 'Selected' : 'Select'}</span>
+              </label>
+            ) : (
+              <div className="gallery-select gallery-select--readonly">
+                <span>View only</span>
+              </div>
+            )}
             <button type="button" className="gallery-thumb-btn" onClick={() => onOpenItem(item)}>
               {thumb && !isVideo ? (
                 <img src={thumb} alt={item.filename || 'Wildlife thumbnail'} loading="lazy" />

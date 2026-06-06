@@ -7,9 +7,27 @@ export default function TagManageSection({
   onDeleteSelected,
   onSelectAll,
   onClearSelection,
+  visible,
 }) {
   const [tagsInput, setTagsInput] = useState('koala');
   const [operation, setOperation] = useState('1');
+
+  if (!visible) {
+    return (
+      <section className="app-card tag-manage-muted">
+        <h2>
+          <span className="card-icon" aria-hidden="true">
+            🏷️
+          </span>
+          Tags &amp; files
+        </h2>
+        <p className="muted" style={{ margin: 0 }}>
+          Select one of your own uploads to edit tags or delete. Other users&apos; media is view-only
+          in Explore.
+        </p>
+      </section>
+    );
+  }
 
   function handleBulk() {
     const tags = tagsInput
@@ -33,12 +51,12 @@ export default function TagManageSection({
 
       <div className="selection-badge">
         <span aria-hidden="true">✓</span>
-        {selectedCount} selected in gallery
+        {selectedCount} of your upload(s) selected
       </div>
 
       <div className="row-actions">
         <button type="button" className="btn-secondary" disabled={busy} onClick={onSelectAll}>
-          Select all
+          Select all mine
         </button>
         <button type="button" className="btn-ghost" disabled={busy} onClick={onClearSelection}>
           Clear

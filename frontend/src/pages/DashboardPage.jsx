@@ -13,6 +13,7 @@ import {
   uploadFile,
 } from '../api/client.js';
 import { useAuth } from '../auth/AuthContext.jsx';
+import { isItemOwnedByUser } from '../auth/authUtils.js';
 import { Alert } from '../components/Alert.jsx';
 import ImageModal from '../components/ImageModal.jsx';
 import MediaGallery from '../components/MediaGallery.jsx';
@@ -27,7 +28,9 @@ export default function DashboardPage() {
     useApiAction(getToken);
 
   const [items, setItems] = useState([]);
+  const [mineItems, setMineItems] = useState([]);
   const [mediaTotal, setMediaTotal] = useState(null);
+  const [browseMode, setBrowseMode] = useState('explore');
   const [selectedUrls, setSelectedUrls] = useState(() => new Set());
   const [lastResponse, setLastResponse] = useState(null);
   const [modal, setModal] = useState(null);
@@ -35,21 +38,37 @@ export default function DashboardPage() {
 
   const refreshList = useCallback(async () => {
     setListLoading(true);
-    const data = await run((token) => listFiles(token, { limit: 100, offset: 0 }));
+    const listParams =
+      browseMode === 'mine' ? { limit: 100, offset: 0, user: 'me' } : { limit: 100, offset: 0 };
+    const data = await run((token) => listFiles(token, listParams));
     setListLoading(false);
     if (data) {
       const normalized = normalizeMediaItems(data);
       setItems(normalized);
       setMediaTotal(typeof data.total === 'number' ? data.total : normalized.length);
       setLastResponse(data);
+      if (browseMode === 'mine') {
+        setMineItems(normalized);
+      }
     }
-  }, [run]);
+  }, [run, browseMode]);
 
   useEffect(() => {
     refreshList();
   }, [refreshList]);
 
+  function itemByUrl(fileUrl) {
+    return items.find((it) => it.fileUrl === fileUrl);
+  }
+
+  function canSelectItem(item) {
+    if (browseMode === 'mine') return true;
+    return isItemOwnedByUser(item, user);
+  }
+
   function toggleSelect(fileUrl) {
+    const item = itemByUrl(fileUrl);
+    if (item && !canSelectItem(item)) return;
     setSelectedUrls((prev) => {
       const next = new Set(prev);
       if (next.has(fileUrl)) next.delete(fileUrl);
@@ -58,12 +77,20 @@ export default function DashboardPage() {
     });
   }
 
-  function selectAll() {
-    setSelectedUrls(new Set(items.map((it) => it.fileUrl).filter(Boolean)));
+  function selectAllOwned() {
+    const owned = items.filter((it) => canSelectItem(it)).map((it) => it.fileUrl).filter(Boolean);
+    setSelectedUrls(new Set(owned));
   }
 
   function clearSelection() {
     setSelectedUrls(new Set());
+  }
+
+  function ownedSelectedUrls() {
+    return [...selectedUrls].filter((url) => {
+      const item = itemByUrl(url);
+      return item && canSelectItem(item);
+    });
   }
 
   async function handleUpload(file) {
@@ -86,6 +113,9 @@ export default function DashboardPage() {
           return [data.item, ...without];
         });
         setMediaTotal((total) => (typeof total === 'number' ? total + 1 : 1));
+        if (browseMode === 'mine') {
+          await refreshList();
+        }
       } else {
         setNotice('Upload successful!');
         await refreshList();
@@ -93,10 +123,35 @@ export default function DashboardPage() {
     }
   }
 
+  function filterToMyUploads(candidates) {
+    const mineUrls = new Set(mineItems.map((it) => it.fileUrl).filter(Boolean));
+    return candidates.filter(
+      (item) =>
+        isItemOwnedByUser(item, user) || (item.fileUrl && mineUrls.has(item.fileUrl)),
+    );
+  }
+
   async function applyQueryResult(data) {
     if (!data) return;
     const normalized = normalizeMediaItems(data);
     setLastResponse(data);
+
+    if (browseMode === 'mine') {
+      const baseline = mineItems.length ? mineItems : items;
+      const filtered = filterToMyUploads(normalized);
+      if (!filtered.length) {
+        setItems(baseline);
+        setMediaTotal(baseline.length);
+        setNotice('No matches in your uploads. Showing all your files.');
+      } else {
+        setItems(filtered);
+        setMediaTotal(filtered.length);
+        setNotice(`Found ${filtered.length} matching file(s) in your uploads.`);
+      }
+      clearSelection();
+      return;
+    }
+
     setItems(normalized);
     setMediaTotal(data.count ?? data.total ?? normalized.length);
     setNotice(`Found ${data.count ?? normalized.length} file(s).`);
@@ -163,7 +218,7 @@ export default function DashboardPage() {
           if (data?.fileUrl) fullUrl = data.fileUrl;
         }
       } catch {
-        // Use fileUrl when thumbnail lookup fails (URL mismatch, etc.)
+        // fall back to fileUrl
       }
     }
 
@@ -181,9 +236,9 @@ export default function DashboardPage() {
   }
 
   async function handleBulkTags({ tags, operation }) {
-    const urls = [...selectedUrls];
+    const urls = ownedSelectedUrls();
     if (!urls.length) {
-      setError('Select at least one file in the gallery.');
+      setError('Select at least one of your own files in the gallery.');
       return;
     }
     if (!tags.length) {
@@ -200,12 +255,18 @@ export default function DashboardPage() {
   }
 
   async function handleDeleteSelected() {
-    const urls = [...selectedUrls];
+    const urls = ownedSelectedUrls();
     if (!urls.length) {
-      setError('Select at least one file to delete.');
+      setError('Select at least one of your own files to delete.');
       return;
     }
-    if (!window.confirm(`Delete ${urls.length} file(s) from storage and database?`)) return;
+    if (
+      !window.confirm(
+        `Delete ${urls.length} file(s) and their thumbnails from storage and database? This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
 
     const data = await run((token) => deleteFiles({ urls }, token), {
       successMessage: `Deleted ${urls.length} file(s).`,
@@ -217,7 +278,14 @@ export default function DashboardPage() {
     }
   }
 
-  const selectedCount = selectedUrls.size;
+  function switchBrowseMode(mode) {
+    if (mode === browseMode) return;
+    setBrowseMode(mode);
+    clearSelection();
+  }
+
+  const selectedOwnedCount = ownedSelectedUrls().length;
+  const welcomeName = user?.displayName || user?.email || 'Explorer';
   const displayedTotal = mediaTotal ?? items.length;
 
   return (
@@ -229,9 +297,9 @@ export default function DashboardPage() {
           </div>
           <div>
             <h1>Aussie EcoLens</h1>
-            <p>
-              {user?.email || 'Signed in'} · {getApiBaseUrl() || 'API not configured'} · upload:{' '}
-              {getUploadMode()}
+            <p className="topbar-welcome">Welcome back, {welcomeName}!</p>
+            <p className="topbar-meta">
+              Signed in as {user?.email || 'unknown'} · upload: {getUploadMode()}
             </p>
           </div>
         </div>
@@ -253,11 +321,11 @@ export default function DashboardPage() {
         <div className="stats-strip">
           <div className="stat-chip">
             <strong>{listLoading ? '…' : displayedTotal}</strong>
-            <span>Media files</span>
+            <span>{browseMode === 'mine' ? 'My uploads' : 'Media files'}</span>
           </div>
           <div className="stat-chip">
-            <strong>{selectedCount}</strong>
-            <span>Selected</span>
+            <strong>{selectedOwnedCount}</strong>
+            <span>Selected (mine)</span>
           </div>
           <div className="stat-chip">
             <strong>{busy ? '…' : 'Ready'}</strong>
@@ -279,10 +347,11 @@ export default function DashboardPage() {
             />
             <TagManageSection
               busy={busy}
-              selectedCount={selectedCount}
+              selectedCount={selectedOwnedCount}
+              visible={selectedOwnedCount > 0}
               onBulkTags={handleBulkTags}
               onDeleteSelected={handleDeleteSelected}
-              onSelectAll={selectAll}
+              onSelectAll={selectAllOwned}
               onClearSelection={clearSelection}
             />
           </div>
@@ -294,17 +363,46 @@ export default function DashboardPage() {
               <span className="card-icon" aria-hidden="true">
                 🖼️
               </span>
-              Results ({listLoading ? '…' : displayedTotal})
+              Gallery ({listLoading ? '…' : displayedTotal})
             </h2>
             {busy || listLoading ? <span className="loading-pill">Working…</span> : null}
           </div>
-          <p className="muted">Hover a thumbnail and click to view full size. Select items to edit tags or delete.</p>
+
+          <div className="browse-tabs" role="tablist" aria-label="Gallery scope">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={browseMode === 'explore'}
+              className={`browse-tab${browseMode === 'explore' ? ' active' : ''}`}
+              disabled={busy || listLoading}
+              onClick={() => switchBrowseMode('explore')}
+            >
+              Explore
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={browseMode === 'mine'}
+              className={`browse-tab${browseMode === 'mine' ? ' active' : ''}`}
+              disabled={busy || listLoading}
+              onClick={() => switchBrowseMode('mine')}
+            >
+              My Uploads
+            </button>
+          </div>
+
+          <p className="muted">
+            {browseMode === 'explore'
+              ? 'All platform observations. Hover a thumbnail and click to view full size.'
+              : 'Only media you uploaded. You can edit tags or delete items here.'}
+          </p>
           <MediaGallery
             items={items}
             selectedUrls={selectedUrls}
             onToggleSelect={toggleSelect}
             onOpenItem={handleOpenItem}
             loading={listLoading}
+            canSelectItem={canSelectItem}
           />
           <details className="raw-json">
             <summary>Raw API response</summary>

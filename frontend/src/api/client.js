@@ -87,11 +87,12 @@ export function getAuthMe(token) {
 
 /**
  * @param {string} token
- * @param {{ limit?: number, offset?: number, checksum?: string }} [params]
+ * @param {{ limit?: number, offset?: number, checksum?: string, user?: string }} [params]
  */
-export function listFiles(token, { limit = 100, offset = 0, checksum } = {}) {
+export function listFiles(token, { limit = 100, offset = 0, checksum, user } = {}) {
   const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (checksum) qs.set('checksum', checksum);
+  if (user) qs.set('user', user);
   return apiRequest(`/files?${qs}`, { token });
 }
 
@@ -252,7 +253,7 @@ export function deleteFiles(payload, token) {
   return jsonRequest('/files/delete', { method: 'POST', payload, token });
 }
 
-/** Extract display URLs from API responses (thumbnails for images). */
+export { isItemOwnedByUser } from '../auth/authUtils.js';
 export function extractThumbnailUrls(data) {
   const urls = [];
   const walk = (value) => {

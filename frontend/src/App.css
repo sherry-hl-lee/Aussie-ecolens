@@ -1,4 +1,4 @@
-/* Aussie EcoLens â€” design system */
+/* Aussie EcoLens ??design system */
 :root {
   --font-body: 'DM Sans', system-ui, sans-serif;
   --font-display: 'Fraunces', Georgia, serif;
@@ -24,7 +24,7 @@
   --radius-xl: 20px;
 }
 
-/* â€”â€” Auth / loading â€”â€” */
+/* ?”â€?Auth / loading ?”â€?*/
 .auth-shell {
   min-height: 100vh;
   display: grid;
@@ -137,7 +137,7 @@
   }
 }
 
-/* â€”â€” Buttons â€”â€” */
+/* ?”â€?Buttons ?”â€?*/
 .btn-primary,
 .btn-secondary,
 .btn-danger,
@@ -220,7 +220,7 @@ button.btn-primary.btn-block {
   margin-top: 0.5rem;
 }
 
-/* â€”â€” App shell â€”â€” */
+/* ?”â€?App shell ?”â€?*/
 .app-shell {
   min-height: 100vh;
   background: var(--eco-cream);
@@ -270,6 +270,18 @@ button.btn-primary.btn-block {
   color: rgba(232, 245, 239, 0.75);
 }
 
+.topbar-welcome {
+  margin: 0.15rem 0 0 !important;
+  font-size: 0.95rem !important;
+  font-weight: 600;
+  color: #fff !important;
+}
+
+.topbar-meta {
+  margin: 0.15rem 0 0 !important;
+  font-size: 0.78rem !important;
+  color: rgba(232, 245, 239, 0.7) !important;
+}
 .app-topbar-actions {
   display: flex;
   gap: 0.5rem;
@@ -290,7 +302,7 @@ button.btn-primary.btn-block {
   background: rgba(196, 69, 54, 0.9);
 }
 
-/* â€”â€” Stats strip â€”â€” */
+/* ?”â€?Stats strip ?”â€?*/
 .stats-strip {
   display: flex;
   flex-wrap: wrap;
@@ -323,7 +335,7 @@ button.btn-primary.btn-block {
   letter-spacing: 0.04em;
 }
 
-/* â€”â€” Layout â€”â€” */
+/* ?”â€?Layout ?”â€?*/
 .app-main {
   max-width: 960px;
   margin: 0 auto;
@@ -353,7 +365,7 @@ button.btn-primary.btn-block {
   gap: 1.25rem;
 }
 
-/* â€”â€” Cards â€”â€” */
+/* ?”â€?Cards ?”â€?*/
 .app-card {
   background: var(--eco-white);
   border: 1px solid var(--eco-border);
@@ -399,7 +411,7 @@ button.btn-primary.btn-block {
   margin: 0 0 0.5rem;
 }
 
-/* â€”â€” Alerts â€”â€” */
+/* ?”â€?Alerts ?”â€?*/
 .alert {
   display: flex;
   align-items: flex-start;
@@ -456,7 +468,7 @@ button.btn-primary.btn-block {
   opacity: 1;
 }
 
-/* â€”â€” Upload dropzone â€”â€” */
+/* ?”â€?Upload dropzone ?”â€?*/
 .upload-dropzone {
   position: relative;
   border: 2px dashed var(--eco-sage);
@@ -511,7 +523,7 @@ button.btn-primary.btn-block {
   color: var(--eco-muted);
 }
 
-/* â€”â€” Query groups â€”â€” */
+/* ?”â€?Query groups ?”â€?*/
 .query-tabs {
   display: flex;
   flex-wrap: wrap;
@@ -644,7 +656,50 @@ button.btn-primary.btn-block {
   margin-bottom: 0.75rem;
 }
 
-/* â€”â€” Results / gallery â€”â€” */
+/* ?”â€?Results / gallery ?”â€?*/
+.browse-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.75rem 0 0.5rem;
+}
+
+.browse-tab {
+  flex: 1;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--eco-border);
+  border-radius: var(--radius-sm);
+  background: var(--eco-cream);
+  color: var(--eco-muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.browse-tab.active {
+  background: var(--eco-green);
+  border-color: var(--eco-green);
+  color: #fff;
+}
+
+.browse-tab:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.tag-manage-muted {
+  opacity: 0.95;
+}
+
+.gallery-card--readonly {
+  opacity: 0.92;
+}
+
+.gallery-select--readonly {
+  cursor: default;
+  color: var(--eco-muted);
+  font-style: italic;
+}
+
 .results-card {
   margin-top: 0.25rem;
 }
@@ -817,7 +872,7 @@ button.btn-primary.btn-block {
   border: 1px dashed var(--eco-border);
 }
 
-/* â€”â€” Raw JSON â€”â€” */
+/* ?”â€?Raw JSON ?”â€?*/
 .raw-json {
   margin-top: 1rem;
   border-top: 1px solid var(--eco-border);
@@ -842,7 +897,7 @@ button.btn-primary.btn-block {
   max-height: 220px;
 }
 
-/* â€”â€” Modal â€”â€” */
+/* ?”â€?Modal ?”â€?*/
 .modal-backdrop {
   position: fixed;
   inset: 0;
