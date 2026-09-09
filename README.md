@@ -1,4 +1,4 @@
-# FIT5225 Assignment 2 — Aussie EcoLens
+# Aussie EcoLens
 
 A multi-cloud serverless wildlife media platform for FIT5225. Authenticated users upload images and videos; an ML model detects Australian species; metadata is stored in a database; users query and manage tags; notifications fire when watched tags appear on new uploads.
 
@@ -121,7 +121,7 @@ config.yaml, batch.py     Offline ML batch utilities (optional)
 
 ## Quick start — frontend (team demo on AWS)
 
-**Prerequisites:** Member A’s API Gateway URL is live; Cognito **Allowed callback URLs** include your dev URL exactly.
+**Prerequisites:**  API Gateway URL is live; Cognito **Allowed callback URLs** include your dev URL exactly.
 
 ```bash
 cd frontend
@@ -170,7 +170,7 @@ VITE_UPLOAD_MODE=local
 
 Place `model.pt` at the repo root (or set paths per `backend/README.md`).
 
-## GCP notify service (Member B — second cloud)
+## GCP notify service (second cloud)
 
 After AWS Lambda tags a file, it `POST`s to Cloud Run `/notify` with a shared webhook secret. Cognito JWT is verified on GCP for demo endpoints (`/auth/me`, `/notifications`).
 
@@ -186,7 +186,7 @@ uvicorn main:app --reload --port 8080
 
 **Deploy:** see [`gcp-notify-service/README.md`](gcp-notify-service/README.md). On Windows/PowerShell use `--env-vars-file cloudrun.env.yaml` (not comma-separated `--set-env-vars`).
 
-**Lambda env vars (Member A — share secret via private message only):**
+**Lambda env vars (share secret via private message only):**
 
 | Variable | Example |
 |----------|---------|
